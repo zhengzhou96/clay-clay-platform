@@ -1,26 +1,166 @@
 @import "tailwindcss";
 
+/* Clay Clay Design System — Color Palette */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Primary Colors */
+  --clay-white: #FAF9F7;
+  --clay-ink: #1A1A1A;
+  --clay-terracotta: #C76D46;
+  --clay-sage: #8B9A7D;
+  --clay-sand: #E8E4DC;
+  --clay-warm-gray: #D4CFC7;
+  
+  /* Secondary Colors */
+  --clay-rust: #A85C3F;
+  --clay-olive: #6B705C;
+  --clay-cream: #F5F3EF;
+  --clay-charcoal: #2D2D2D;
+  
+  /* Functional Colors */
+  --clay-success: #5A7D5A;
+  --clay-error: #C94C4C;
+  --clay-warning: #D4A056;
+  
+  /* Theme Mapping */
+  --background: var(--clay-white);
+  --foreground: var(--clay-ink);
+  
+  /* Spacing */
+  --gutter: clamp(1.25rem, 4vw, 5rem);
+  --section: clamp(3rem, 8vw, 6rem);
+  
+  /* Motion Tokens */
+  --duration-fast: 150ms;
+  --duration-normal: 300ms;
+  --duration-slow: 500ms;
+  --duration-slower: 800ms;
+  --duration-slowest: 1200ms;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  /* Colors */
+  --color-clay-white: var(--clay-white);
+  --color-clay-ink: var(--clay-ink);
+  --color-clay-terracotta: var(--clay-terracotta);
+  --color-clay-sage: var(--clay-sage);
+  --color-clay-sand: var(--clay-sand);
+  --color-clay-warm-gray: var(--clay-warm-gray);
+  --color-clay-rust: var(--clay-rust);
+  --color-clay-olive: var(--clay-olive);
+  --color-clay-cream: var(--clay-cream);
+  --color-clay-charcoal: var(--clay-charcoal);
+  --color-clay-success: var(--clay-success);
+  --color-clay-error: var(--clay-error);
+  --color-clay-warning: var(--clay-warning);
+  
+  /* Typography */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-serif: 'Georgia', serif;
+  --font-mono: 'Courier Prime', monospace;
+  
+  /* Spacing */
+  --spacing-gutter: var(--gutter);
+  --spacing-section: var(--section);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* Base Styles */
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--clay-white);
+  color: var(--clay-ink);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  overflow-x: hidden;
+}
+
+/* Typography */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-serif);
+  font-weight: 400;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+h1 { 
+  font-size: clamp(2.5rem, 6vw, 4rem);
+  letter-spacing: -0.01em;
+}
+
+h2 { 
+  font-size: clamp(2rem, 5vw, 3rem);
+}
+
+h3 { 
+  font-size: clamp(1.5rem, 4vw, 2rem);
+}
+
+p {
+  max-width: 65ch;
+  line-height: 1.7;
+}
+
+/* Focus States */
+:focus-visible {
+  outline: 2px solid var(--clay-terracotta);
+  outline-offset: 2px;
+}
+
+/* Reduced Motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  html { scroll-behavior: auto; }
+}
+
+/* Mobile Touch Targets */
+button, a.control {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+/* Safe Area Padding */
+.safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Utility Classes */
+.editorial-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(2rem, 4vw, 3rem);
+}
+
+@media (min-width: 768px) {
+  .editorial-grid {
+    grid-template-columns: 1.3fr 1fr;
+  }
+}
+
+.container-narrow {
+  max-width: 1024px;
+  margin: 0 auto;
+  padding: 0 var(--gutter);
+}
+
+.container-max {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 0 var(--gutter);
 }
