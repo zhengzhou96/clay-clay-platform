@@ -25,11 +25,42 @@ export default async function TimesheetsPage({
   // Fetch employees for filter
   const { data: employees } = await supabase
     .from('employees')
-    .select('id, employee_code, full_name, status')
+    .select('id, employee_code, full_name, hourly_wage_cents, status')
     .eq('status', 'active')
     .order('full_name')
 
   // Build attendance query
+  interface AttendanceWithRelations {
+    id: string
+    employee_id: string
+    shift_id: string | null
+    date: string
+    scheduled_in: string | null
+    scheduled_out: string | null
+    actual_in: string | null
+    actual_out: string | null
+    hours_worked: number | null
+    estimated_wages_cents: number | null
+    status: string
+    correction_reason: string | null
+    voided: boolean
+    voided_by: string | null
+    voided_at: string | null
+    void_reason: string | null
+    employee: {
+      id: string
+      employee_code: string
+      full_name: string
+      hourly_wage_cents: number
+    }
+    shift: {
+      id: string
+      start_time: string
+      end_time: string
+      break_minutes: number
+    } | null
+  }
+
   let attendanceQuery = supabase
     .from('attendances')
     .select(`
@@ -61,7 +92,7 @@ export default async function TimesheetsPage({
     attendanceQuery = attendanceQuery.eq('employee_id', employeeIdParam)
   }
 
-  const { data: attendances } = await attendanceQuery
+  const { data: attendances } = await attendanceQuery as { data: AttendanceWithRelations[] | null }
 
   // Transform attendances to timesheet rows
   const timesheetRows = (attendances || []).map(a => {
@@ -155,7 +186,7 @@ export default async function TimesheetsPage({
         <StatCard title="Late Arrivals" value={lateArrivals} icon={<ClockAlertIcon />} trendNegative={lateArrivals > 0} />
       </div>
 
-      <TimesheetTable rows={timesheetRows} employees={employees || []} />
+      <TimesheetTable rows={timesheetRows} />
     </div>
   )
 }

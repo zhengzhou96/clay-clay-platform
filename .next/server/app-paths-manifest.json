@@ -1,0 +1,15 @@
+{
+  "/_global-error/page": "app/_global-error/page.js",
+  "/_not-found/page": "app/_not-found/page.js",
+  "/admin/staff/employees/page": "app/admin/staff/employees/page.js",
+  "/admin/staff/page": "app/admin/staff/page.js",
+  "/admin/staff/schedule/page": "app/admin/staff/schedule/page.js",
+  "/admin/staff/timesheets/page": "app/admin/staff/timesheets/page.js",
+  "/admin/staff/wages/page": "app/admin/staff/wages/page.js",
+  "/page": "app/page.js",
+  "/staff/auth/callback/route": "app/staff/auth/callback/route.js",
+  "/staff/hours/page": "app/staff/hours/page.js",
+  "/staff/login/page": "app/staff/login/page.js",
+  "/staff/page": "app/staff/page.js",
+  "/staff/schedule/page": "app/staff/schedule/page.js"
+}

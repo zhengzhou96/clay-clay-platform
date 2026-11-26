@@ -27,13 +27,6 @@ interface TimesheetRow {
 
 interface TimesheetTableProps {
   rows: TimesheetRow[]
-  employees: Array<{
-    id: string
-    employee_code: string
-    full_name: string
-    hourly_wage_cents: number
-    status: string
-  }>
 }
 
 const statusConfig: Record<string, { label: string; icon: React.ReactNode; className: string }> = {
@@ -44,7 +37,7 @@ const statusConfig: Record<string, { label: string; icon: React.ReactNode; class
   unscheduled: { label: 'Unscheduled', icon: <Plus className="w-3 h-3" />, className: 'badge-secondary' },
 }
 
-export default function TimesheetTable({ rows, employees }: TimesheetTableProps) {
+export default function TimesheetTable({ rows }: TimesheetTableProps) {
   const [editingRow, setEditingRow] = useState<TimesheetRow | null>(null)
   const [editForm, setEditForm] = useState({
     actual_in: '',

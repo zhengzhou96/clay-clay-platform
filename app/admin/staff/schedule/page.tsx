@@ -1,5 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
-import { format, startOfWeek, endOfWeek, addDays, addWeeks, subWeeks, parseISO } from 'date-fns'
+import { format, startOfWeek, endOfWeek, addWeeks, subWeeks, parseISO } from 'date-fns'
 import WeeklyCalendar from './components/WeeklyCalendar'
 import ShiftModal from './components/ShiftModal'
 
@@ -88,7 +88,6 @@ export default async function SchedulePage({
 
       <WeeklyCalendar
         weekStart={weekStart}
-        weekEnd={weekEnd}
         employees={employees || []}
         shifts={shifts || []}
       />

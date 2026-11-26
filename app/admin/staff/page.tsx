@@ -1,5 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
-import { format, startOfDay, endOfDay, startOfMonth, endOfMonth } from 'date-fns'
+import { format, startOfMonth, endOfMonth } from 'date-fns'
 import DashboardStats from './components/DashboardStats'
 import CurrentlyWorking from './components/CurrentlyWorking'
 import ScheduledToday from './components/ScheduledToday'
@@ -15,8 +15,6 @@ export default async function OverviewPage() {
   }
 
   const today = new Date()
-  const todayStart = startOfDay(today).toISOString()
-  const todayEnd = endOfDay(today).toISOString()
   const monthStart = startOfMonth(today).toISOString()
   const monthEnd = endOfMonth(today).toISOString()
 
@@ -58,21 +56,33 @@ export default async function OverviewPage() {
 
   const scheduledToday = shiftsToday?.length || 0
 
+  interface LateAlert {
+  id: string
+  employee_id: string
+  date: string
+  start_time: string
+  end_time: string
+  status: string
+  break_minutes: number
+  minutesLate: number
+  alertType: 'late' | 'not_checked_in'
+}
+
   // Late/not checked in alerts
-  const lateAlerts = shiftsToday?.filter(shift => {
+  const lateAlerts: LateAlert[] = (shiftsToday || []).filter(shift => {
     const attendance = attendancesToday?.find(a => a.shift_id === shift.id)
     const now = new Date()
     const shiftStart = new Date(`${shift.date}T${shift.start_time}`)
     const minutesLate = Math.floor((now.getTime() - shiftStart.getTime()) / 60000)
     
     if (!attendance && minutesLate > 5) {
-      return { ...shift, minutesLate, alertType: 'not_checked_in' as const }
+      return { ...shift, minutesLate, alertType: 'not_checked_in' as const } satisfies LateAlert
     }
     if (attendance && !attendance.actual_in && minutesLate > 5) {
-      return { ...shift, minutesLate, alertType: 'late' as const }
+      return { ...shift, minutesLate, alertType: 'late' as const } satisfies LateAlert
     }
     return null
-  }).filter(Boolean) || []
+  }).filter(Boolean) as LateAlert[]
 
   const todayActualHours = attendancesToday?.reduce((sum, a) => sum + (a.hours_worked || 0), 0) || 0
   const todayEstimatedCost = attendancesToday?.reduce((sum, a) => sum + (a.estimated_wages_cents || 0), 0) || 0

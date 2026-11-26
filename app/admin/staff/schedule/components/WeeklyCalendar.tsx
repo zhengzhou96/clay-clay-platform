@@ -6,7 +6,6 @@ import { Trash2, Edit, AlertTriangle, Calendar } from 'lucide-react'
 
 interface WeeklyCalendarProps {
   weekStart: Date
-  weekEnd: Date
   employees: Array<{
     id: string
     employee_code: string
@@ -29,7 +28,7 @@ interface WeeklyCalendarProps {
   }>
 }
 
-export default function WeeklyCalendar({ weekStart, weekEnd, employees, shifts }: WeeklyCalendarProps) {
+export default function WeeklyCalendar({ weekStart, employees, shifts }: WeeklyCalendarProps) {
   const [selectedShift, setSelectedShift] = useState<typeof shifts[0] | null>(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null)
 
@@ -100,7 +99,7 @@ export default function WeeklyCalendar({ weekStart, weekEnd, employees, shifts }
       <div className="border-b border-clay-200 bg-clay-50">
         <div className="w-48 border-r border-clay-200 flex-shrink-0" />
         <div className="flex overflow-x-auto min-w-0">
-          {days.map((day, dayIndex) => (
+          {days.map((day) => (
             <div
               key={day.toISOString()}
               className={`w-40 sm:w-48 flex-shrink-0 px-3 py-3 border-r border-clay-200 ${

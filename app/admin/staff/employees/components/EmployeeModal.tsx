@@ -62,44 +62,6 @@ export default function EmployeeModal({ employees }: EmployeeModalProps) {
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [wageErrors, setWageErrors] = useState<Record<string, string>>({})
 
-  const openModal = (employee?: typeof employees[0]) => {
-    if (employee) {
-      setEditingEmployee(employee)
-      setFormData({
-        employee_code: employee.employee_code,
-        full_name: employee.full_name,
-        email: employee.email,
-        phone: employee.phone || '',
-        hourly_wage_cents: employee.hourly_wage_cents,
-        wage_rate_type: employee.wage_rate_type,
-        status: employee.status,
-        hire_date: employee.hire_date,
-        termination_date: employee.termination_date || '',
-        notes: employee.notes || '',
-      })
-      setCredFormData({ email: employee.email, password: '', confirm_password: '' })
-    } else {
-      setEditingEmployee(null)
-      setFormData({
-        employee_code: '',
-        full_name: '',
-        email: '',
-        phone: '',
-        hourly_wage_cents: 0,
-        wage_rate_type: 'hourly',
-        status: 'active',
-        hire_date: format(new Date(), 'yyyy-MM-dd'),
-        termination_date: '',
-        notes: '',
-      })
-      setCredFormData({ email: '', password: '', confirm_password: '' })
-    }
-    setActiveTab('profile')
-    setErrors({})
-    setWageErrors({})
-    setIsOpen(true)
-  }
-
   const closeModal = () => {
     setIsOpen(false)
     setEditingEmployee(null)

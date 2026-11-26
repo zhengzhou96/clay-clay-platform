@@ -43,35 +43,6 @@ export default function ShiftModal({ employees, weekStart }: ShiftModalProps) {
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [overlapWarning, setOverlapWarning] = useState<string | null>(null)
 
-  const openModal = (shift?: typeof editingShift) => {
-    if (shift) {
-      setEditingShift(shift)
-      setFormData({
-        employee_id: shift.employee_id,
-        date: shift.date,
-        start_time: shift.start_time,
-        end_time: shift.end_time,
-        status: shift.status,
-        break_minutes: shift.break_minutes,
-        notes: shift.notes || '',
-      })
-    } else {
-      setEditingShift(null)
-      setFormData({
-        employee_id: '',
-        date: format(weekStart, 'yyyy-MM-dd'),
-        start_time: '09:00',
-        end_time: '17:00',
-        status: 'scheduled',
-        break_minutes: 60,
-        notes: '',
-      })
-    }
-    setErrors({})
-    setOverlapWarning(null)
-    setIsOpen(true)
-  }
-
   const closeModal = () => {
     setIsOpen(false)
     setEditingShift(null)

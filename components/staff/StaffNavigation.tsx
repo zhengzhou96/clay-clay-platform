@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { useStaffAuth } from './StaffAuthProvider'
 
 const navigation = [
   { name: 'Home', href: '/staff', icon: HomeIcon },

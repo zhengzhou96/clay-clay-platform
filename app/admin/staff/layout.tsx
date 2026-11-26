@@ -4,7 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { User, LogOut, Menu, X, ChevronRight } from 'lucide-react'
+import { User, LogOut, Menu, ChevronRight } from 'lucide-react'
 
 const navigation = [
   { name: 'Overview', href: '/admin/staff', icon: 'layout' },
@@ -69,7 +69,7 @@ export default function AdminLayout({
   children: React.ReactNode
 }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [user, setUser] = useState<{ name: string; email: string } | null>(null)
+  const [user] = useState<{ name: string; email: string } | null>(null)
   const pathname = usePathname()
   const supabase = createClient()
 
