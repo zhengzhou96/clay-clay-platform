@@ -25,11 +25,17 @@ export async function GET() {
     
     if (error) {
       // Check if it's a "relation doesn't exist" error (migration not run)
-      if (error.message.includes('relation') || error.message.includes('does not exist')) {
+      const tableMissing = error.message.includes('relation') || 
+                          error.message.includes('does not exist') ||
+                          error.message.includes('Failed to fetch')
+      
+      if (tableMissing) {
         return NextResponse.json({
           status: 'migration_needed',
-          message: 'Database connection OK, but tables not created yet',
-          error: error.message
+          message: 'Database connection OK, but staff scheduling tables not created yet',
+          error_type: error.message.includes('Failed to fetch') ? 'network' : 'table_missing',
+          error: error.message,
+          next_step: 'Run db/migrations/002_staff_scheduling.sql via Supabase Dashboard SQL Editor'
         })
       }
       
@@ -49,7 +55,8 @@ export async function GET() {
   } catch (error: any) {
     return NextResponse.json({
       status: 'error',
-      message: error.message || 'Unknown error'
+      message: error.message || 'Unknown error',
+      error_type: error.constructor?.name || 'Unknown'
     }, { status: 500 })
   }
 }
