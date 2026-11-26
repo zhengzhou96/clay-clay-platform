@@ -11,7 +11,7 @@ import { createClient } from '@supabase/supabase-js'
  * Safe to call multiple times - migration is idempotent.
  */
 
-export async function POST(request: Request) {
+export async function POST() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
   

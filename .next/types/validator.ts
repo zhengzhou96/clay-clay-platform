@@ -222,6 +222,46 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
   type __Unused = __Check
 }
 
+// Validate ../../app/api/admin/apply-migration/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/admin/apply-migration">> = Specific
+  const handler = {} as typeof import("../../app/api/admin/apply-migration/route.js")
+  type __Check = __IsExpected<typeof handler>
+  
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/admin/run-migration/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/admin/run-migration">> = Specific
+  const handler = {} as typeof import("../../app/api/admin/run-migration/route.js")
+  type __Check = __IsExpected<typeof handler>
+  
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/config-check/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/config-check">> = Specific
+  const handler = {} as typeof import("../../app/api/config-check/route.js")
+  type __Check = __IsExpected<typeof handler>
+  
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../app/api/status/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/status">> = Specific
+  const handler = {} as typeof import("../../app/api/status/route.js")
+  type __Check = __IsExpected<typeof handler>
+  
+  // @ts-ignore
+  type __Unused = __Check
+}
+
 // Validate ../../app/staff/auth/callback/route.ts
 {
   type __IsExpected<Specific extends RouteHandlerConfig<"/staff/auth/callback">> = Specific
