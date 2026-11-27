@@ -37,67 +37,73 @@ All pages verified accessible:
 
 ---
 
-## ✅ Database Migration - SECURITY REVIEWED
+## ✅ Database Migration - SECURITY REVIEWED v2
 
 ### Status
-**READY FOR PRODUCTION** - Migration file has been security-reviewed and all identified issues fixed.
+**READY FOR PRODUCTION** - Migration v2 addresses all 11 security audit issues.
 
-**Latest Commit:** `41f57a31` (2026-11-27)
+**Latest Commit:** `7dc83a2a` (2026-11-27)
 
-### Issues Fixed
+### Issues Fixed (All 11 from Security Audit)
 
 | # | Issue | Resolution |
 |---|-------|------------|
-| 1 | `CURRENT_DATE` in index predicate (immutable error) | Removed time-dependent WHERE clause from `idx_employee_wage_rates_active` |
-| 2 | Anonymous access via `auth.uid() IS NULL` | Removed from all RLS policies - authentication required |
-| 3 | Staff could update own role | Policy now prevents changing `role`, `email`, `name`, `is_active` |
-| 4 | `correct_attendance()` parameter order | Fixed: required params first, then defaults |
-| 5 | Attendance recalculation timestamps | Now uses `NEW.clock_in_tz` and `NEW.clock_out_tz` |
-| 6 | `get_payroll_summary()` return types | Fixed aggregates to return `BIGINT` for counts |
-| 7 | Existing function dependencies | Uses Collection Logger's `update_updated_at_column()` and `audit_trigger_function()` |
-| 8 | Staff self-creating shifts | Removed INSERT policy for non-admins - admin approval required |
-| 9 | UUID GiST operator class | Added `btree_gist` extension |
+| 1 | `OLD/NEW` in CREATE POLICY statements | Removed - use triggers for field-level restrictions |
+| 2 | Recursive RLS on employees | `SECURITY DEFINER` helper functions (`is_current_user_admin()`, `get_current_employee_id()`) |
+| 3 | Staff self-modification of privileged fields | Trigger blocks role/email/name/is_active changes; no INSERT policy for shifts |
+| 4 | Wage calculation with NEW values | BEFORE UPDATE trigger uses `NEW.clock_in_tz`, `NEW.clock_out_tz` |
+| 5 | RPC function security | `SECURITY DEFINER` with explicit role checks; GRANTS restricted |
+| 6 | Multiple active attendance sessions | Partial unique index: `WHERE clock_out_tz IS NULL` |
+| 7 | Singapore timezone handling | All date comparisons use `AT TIME ZONE 'Asia/Singapore'` |
+| 8 | Overlapping wage rates | GiST exclusion constraint with `btree_gist` extension |
+| 9 | Audit logs not append-only | No UPDATE/DELETE policies; `ON DELETE SET NULL` not CASCADE |
+| 10 | Collection Logger function compatibility | Self-contained trigger functions (don't depend on existing) |
+| 11 | Idempotent migration | `CREATE TABLE IF NOT EXISTS`, `_migration_002_applied` guard |
 
 ### Migration File
 
-**Location:** `db/migrations/002_staff_scheduling.sql`  
-**Size:** ~31,600 chars  
+**Location:** `db/migrations/002_staff_scheduling_security_reviewed_v2.sql`  
+**Size:** ~32,849 chars  
 **Tables:** 5 (`employees`, `employee_wage_rates`, `staff_shifts`, `attendance_shifts`, `attendance_audit_logs`)  
-**Functions:** 10 (wage calculation, overlap detection, payroll summary, etc.)  
-**RLS Policies:** 24 (strict isolation, admin-only wage management)
+**Functions:** 12 (admin checks, wage calculation, payroll summary, timezone helpers)  
+**RLS Policies:** 20 (strict isolation, admin-only wage management, append-only audit)  
+**Indexes:** 20+ (including GiST exclusion for wage overlap and one-active-session)
 
 ### How to Apply
 
-**Option 1: Supabase Dashboard (Recommended)**
+**Supabase Dashboard (2 minutes):**
 
 1. Go to: https://supabase.com/dashboard/project/ispoxdaiahtwzblzawef/sql/new
-2. Open: https://github.com/zhengzhou96/clay-clay-platform/blob/master/db/migrations/002_staff_scheduling.sql
+2. Open: https://github.com/zhengzhou96/clay-clay-platform/blob/master/db/migrations/002_staff_scheduling_security_reviewed_v2.sql
 3. Copy entire file contents (Ctrl+A, Ctrl+C)
 4. Paste into SQL Editor
 5. Click "Run"
-6. Verify success message
+6. Verify success: `_migration_002_applied` table created
 
-**Expected result:** 5 tables created, 24 RLS policies applied, 10 functions created
+**Expected result:** 5 tables, 20 RLS policies, 12 functions, 20+ indexes created
 
-**Option 2: Supabase CLI**
+### Test Plan
 
-```bash
-supabase db push --db-url "postgres://postgres.ispoxdaiahtwzblzawef:[SERVICE_ROLE_KEY]@db.ispoxdaiahtwzblzawef.supabase.co:5432/postgres"
-```
+See: `db/migrations/MIGRATION_TEST_PLAN.md` - 15 comprehensive test cases covering:
+- Anonymous access (blocked)
+- Staff self-view (allowed)
+- Staff cannot view others (blocked)
+- Staff cannot change own role (blocked by trigger)
+- Staff cannot create shifts (no policy)
+- Staff can clock in (server timestamp)
+- One active session constraint (unique index)
+- Staff cannot clock out others (RLS)
+- Admin can view all (allowed)
+- Admin can correct attendance (SECURITY DEFINER)
+- Staff cannot call correct_attendance (role check)
+- Wage rate overlap prevention (GiST exclusion)
+- Audit logs append-only (no UPDATE/DELETE policies)
+- Singapore timezone handling (AT TIME ZONE)
+- Collection Logger unaffected (no conflicts)
 
 ### Rollback Plan
 
-If migration fails or needs to be reverted:
-
-```sql
--- Drop all new objects (safe - no data loss if just tested)
-DROP TABLE IF EXISTS attendance_audit_logs CASCADE;
-DROP TABLE IF EXISTS attendance_shifts CASCADE;
-DROP TABLE IF EXISTS staff_shifts CASCADE;
-DROP TABLE IF EXISTS employee_wage_rates CASCADE;
-DROP TABLE IF EXISTS employees CASCADE;
-
--- Drop functions
+If migration needs to be reverted, run rollback SQL from `MIGRATION_TEST_PLAN.md`.
 DROP FUNCTION IF EXISTS get_payroll_summary;
 DROP FUNCTION IF EXISTS get_staff_schedule;
 DROP FUNCTION IF EXISTS from_sgt;
