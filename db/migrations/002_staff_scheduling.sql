@@ -5,6 +5,7 @@
 
 -- Enable required extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "btree_gist";  -- Required for GiST exclusion constraints on UUID
 
 -- ============================================================================
 -- ENUMS (Staff Scheduling)
