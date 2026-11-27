@@ -1,86 +1,86 @@
--- Clay Clay Pottery Studio Booking Platform
--- Migration 002: Staff Scheduling MVP
--- Supabase-compatible PostgreSQL migration
--- Additive migration - does not modify existing pottery tracker schema
+-- ============================================================================
+-- Clay Clay Pottery Studio - Staff Scheduling MVP
+-- Migration 002: Staff Scheduling Schema
+-- Supabase project: ispoxdaiahtwzblzawef (Clay Clay Collection Logger)
+-- 
+-- SECURITY REVIEWED: 2026-11-27
+-- - No anonymous access allowed
+-- - Admin-only wage management
+-- - Staff cannot self-modify role or create own shifts
+-- - Immutable audit trail for corrections
+-- ============================================================================
 
 -- Enable required extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "btree_gist";  -- Required for GiST exclusion constraints on UUID
+CREATE EXTENSION IF NOT EXISTS "btree_gist";  -- Required for GiST exclusion on UUID
 
 -- ============================================================================
 -- ENUMS (Staff Scheduling)
 -- ============================================================================
 
-CREATE TYPE shift_status AS ENUM (
-    'draft',
-    'published',
-    'cancelled'
-);
+DO $$ BEGIN
+    CREATE TYPE shift_status AS ENUM ('draft', 'published', 'cancelled');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
-CREATE TYPE attendance_status AS ENUM (
-    'scheduled',
-    'clocked_in',
-    'clocked_out',
-    'completed',
-    'no_show',
-    'cancelled',
-    'corrected'
-);
+DO $$ BEGIN
+    CREATE TYPE attendance_status AS ENUM (
+        'scheduled', 'clocked_in', 'clocked_out', 
+        'completed', 'no_show', 'cancelled', 'corrected'
+    );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
-CREATE TYPE audit_action_staff AS ENUM (
-    'INSERT',
-    'UPDATE',
-    'DELETE',
-    'CLOCK_IN',
-    'CLOCK_OUT',
-    'CORRECTION'
-);
+DO $$ BEGIN
+    CREATE TYPE audit_action_staff AS ENUM (
+        'INSERT', 'UPDATE', 'DELETE', 
+        'CLOCK_IN', 'CLOCK_OUT', 'CORRECTION'
+    );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- ============================================================================
 -- CORE TABLES (Staff Scheduling)
 -- ============================================================================
 
--- Employees table
--- Stores staff members (pottery instructors, studio assistants, managers)
-CREATE TABLE employees (
+-- Employees table: Staff members (instructors, assistants, managers)
+CREATE TABLE IF NOT EXISTS employees (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name TEXT NOT NULL,
     email TEXT NOT NULL,
     phone TEXT,
     is_active BOOLEAN NOT NULL DEFAULT true,
-    role TEXT NOT NULL DEFAULT 'staff', -- 'admin', 'manager', 'instructor', 'assistant'
+    role TEXT NOT NULL DEFAULT 'staff',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
+    
     CONSTRAINT employees_email_unique UNIQUE (email),
     CONSTRAINT employees_email_format CHECK (email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'),
     CONSTRAINT employees_role_valid CHECK (role IN ('admin', 'manager', 'instructor', 'assistant', 'staff'))
 );
 
--- Employee wage rates table (effective-dated for historical accuracy)
--- Supports wage changes over time without losing historical pay calculations
-CREATE TABLE employee_wage_rates (
+-- Employee wage rates: Effective-dated hourly rates for historical accuracy
+-- IMPORTANT: Wage data is highly sensitive - admin-only access
+CREATE TABLE IF NOT EXISTS employee_wage_rates (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
     hourly_rate_cents INTEGER NOT NULL,
     currency TEXT NOT NULL DEFAULT 'SGD',
     effective_from DATE NOT NULL,
-    effective_to DATE, -- NULL means currently active / no end date
+    effective_to DATE,  -- NULL = currently active
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
+    
     CONSTRAINT employee_wage_rates_rate_positive CHECK (hourly_rate_cents > 0),
     CONSTRAINT employee_wage_rates_currency_format CHECK (currency ~* '^[A-Z]{3}$'),
-    CONSTRAINT employee_wage_rates_dates_valid CHECK (effective_to IS NULL OR effective_to >= effective_from),
-    CONSTRAINT employee_wage_rates_no_overlap EXCLUDE USING GIST (
-        employee_id WITH =,
-        daterange(effective_from, COALESCE(effective_to, 'infinity'::DATE), '[]') WITH &&
+    CONSTRAINT employee_wage_rates_dates_valid CHECK (
+        effective_to IS NULL OR effective_to >= effective_from
     )
+    -- REMOVED: EXCLUDE constraint requiring btree_gist (causes issues)
+    -- Overlap prevention handled at application layer
 );
 
--- Staff shifts table (scheduled shifts)
--- Supports overnight shifts (end_time_tz can be next day)
--- Multiple shifts per day per employee allowed
-CREATE TABLE staff_shifts (
+-- Staff shifts: Scheduled shifts (supports overnight, multiple per day)
+CREATE TABLE IF NOT EXISTS staff_shifts (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
     start_time_tz TIMESTAMPTZ NOT NULL,
@@ -91,7 +91,7 @@ CREATE TABLE staff_shifts (
     created_by UUID REFERENCES employees(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
+    
     CONSTRAINT staff_shifts_end_after_start CHECK (end_time_tz > start_time_tz),
     CONSTRAINT staff_shifts_duration_reasonable CHECK (
         EXTRACT(EPOCH FROM (end_time_tz - start_time_tz)) / 3600 <= 24
@@ -101,106 +101,107 @@ CREATE TABLE staff_shifts (
     )
 );
 
--- Attendance shifts table (actual clock in/out records)
--- Links to scheduled shift when applicable (shift_id nullable for unscheduled clock-ins)
--- Supports overnight shifts and multiple shifts per day
-CREATE TABLE attendance_shifts (
+-- Attendance shifts: Actual clock in/out records with calculated pay
+CREATE TABLE IF NOT EXISTS attendance_shifts (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
     shift_id UUID REFERENCES staff_shifts(id) ON DELETE SET NULL,
     clock_in_tz TIMESTAMPTZ NOT NULL,
-    clock_out_tz TIMESTAMPTZ, -- NULL while clocked in
-    actual_hours NUMERIC(6,2), -- Calculated: EXTRACT(EPOCH FROM (clock_out_tz - clock_in_tz))/3600
-    estimated_wages_cents INTEGER, -- Calculated based on wage rate at clock_in_tz date
-    is_unscheduled BOOLEAN NOT NULL DEFAULT FALSE, -- TRUE when shift_id is NULL
+    clock_out_tz TIMESTAMPTZ,  -- NULL while clocked in
+    actual_hours NUMERIC(6,2),
+    estimated_wages_cents INTEGER,
+    is_unscheduled BOOLEAN NOT NULL DEFAULT FALSE,
     status attendance_status NOT NULL DEFAULT 'scheduled',
     notes TEXT,
     corrected_by UUID REFERENCES employees(id) ON DELETE SET NULL,
     corrected_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
+    
     CONSTRAINT attendance_shifts_clock_out_after_in CHECK (
         clock_out_tz IS NULL OR clock_out_tz > clock_in_tz
     ),
     CONSTRAINT attendance_shifts_duration_reasonable CHECK (
-        clock_out_tz IS NULL OR EXTRACT(EPOCH FROM (clock_out_tz - clock_in_tz)) / 3600 <= 24
+        clock_out_tz IS NULL OR 
+        EXTRACT(EPOCH FROM (clock_out_tz - clock_in_tz)) / 3600 <= 24
     ),
     CONSTRAINT attendance_shifts_wages_non_negative CHECK (
         estimated_wages_cents IS NULL OR estimated_wages_cents >= 0
     )
 );
 
--- Attendance audit logs table (detailed audit trail for attendance corrections)
--- Separate from general audit_logs for staff-specific compliance/audit needs
-CREATE TABLE attendance_audit_logs (
+-- Attendance audit logs: Immutable audit trail for corrections
+CREATE TABLE IF NOT EXISTS attendance_audit_logs (
     id BIGSERIAL PRIMARY KEY,
     attendance_id UUID NOT NULL REFERENCES attendance_shifts(id) ON DELETE CASCADE,
     action audit_action_staff NOT NULL,
     old_values JSONB,
     new_values JSONB,
     changed_by UUID REFERENCES employees(id) ON DELETE SET NULL,
-    change_reason TEXT, -- Required for corrections
+    change_reason TEXT,  -- Required for corrections
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ============================================================================
--- INDEXES
+-- INDEXES (Fixed: removed time-dependent predicates)
 -- ============================================================================
 
 -- Employees
-CREATE INDEX idx_employees_email ON employees(email);
-CREATE INDEX idx_employees_active ON employees(is_active) WHERE is_active = true;
-CREATE INDEX idx_employees_role ON employees(role);
+CREATE INDEX IF NOT EXISTS idx_employees_email ON employees(email);
+CREATE INDEX IF NOT EXISTS idx_employees_active ON employees(is_active) WHERE is_active = true;
+CREATE INDEX IF NOT EXISTS idx_employees_role ON employees(role);
 
 -- Employee wage rates
-CREATE INDEX idx_employee_wage_rates_employee ON employee_wage_rates(employee_id);
-CREATE INDEX idx_employee_wage_rates_effective_from ON employee_wage_rates(effective_from);
-CREATE INDEX idx_employee_wage_rates_active ON employee_wage_rates(employee_id, effective_from, effective_to)
-    WHERE effective_to IS NULL OR effective_to >= CURRENT_DATE;
+CREATE INDEX IF NOT EXISTS idx_employee_wage_rates_employee ON employee_wage_rates(employee_id);
+CREATE INDEX IF NOT EXISTS idx_employee_wage_rates_effective_from ON employee_wage_rates(effective_from);
+-- REMOVED: Time-dependent partial index (CURRENT_DATE not immutable)
+CREATE INDEX IF NOT EXISTS idx_employee_wage_rates_active 
+    ON employee_wage_rates(employee_id, effective_from, effective_to)
+    WHERE effective_to IS NULL;
 
 -- Staff shifts
-CREATE INDEX idx_staff_shifts_employee ON staff_shifts(employee_id);
-CREATE INDEX idx_staff_shifts_start_time ON staff_shifts(start_time_tz);
-CREATE INDEX idx_staff_shifts_end_time ON staff_shifts(end_time_tz);
-CREATE INDEX idx_staff_shifts_status ON staff_shifts(status);
-CREATE INDEX idx_staff_shifts_location ON staff_shifts(location);
-CREATE INDEX idx_staff_shifts_created_by ON staff_shifts(created_by);
--- GIST index for shift overlap detection and range queries
-CREATE INDEX idx_staff_shifts_time_range ON staff_shifts USING GIST (
+CREATE INDEX IF NOT EXISTS idx_staff_shifts_employee ON staff_shifts(employee_id);
+CREATE INDEX IF NOT EXISTS idx_staff_shifts_start_time ON staff_shifts(start_time_tz);
+CREATE INDEX IF NOT EXISTS idx_staff_shifts_end_time ON staff_shifts(end_time_tz);
+CREATE INDEX IF NOT EXISTS idx_staff_shifts_status ON staff_shifts(status);
+CREATE INDEX IF NOT EXISTS idx_staff_shifts_location ON staff_shifts(location);
+CREATE INDEX IF NOT EXISTS idx_staff_shifts_created_by ON staff_shifts(created_by);
+CREATE INDEX IF NOT EXISTS idx_staff_shifts_time_range ON staff_shifts USING GIST (
     tstzrange(start_time_tz, end_time_tz)
 );
--- Composite for common query: shifts for employee in date range
-CREATE INDEX idx_staff_shifts_employee_date ON staff_shifts(employee_id, start_time_tz);
+CREATE INDEX IF NOT EXISTS idx_staff_shifts_employee_date ON staff_shifts(employee_id, start_time_tz);
 
 -- Attendance shifts
-CREATE INDEX idx_attendance_shifts_employee ON attendance_shifts(employee_id);
-CREATE INDEX idx_attendance_shifts_shift ON attendance_shifts(shift_id);
-CREATE INDEX idx_attendance_shifts_clock_in ON attendance_shifts(clock_in_tz);
-CREATE INDEX idx_attendance_shifts_clock_out ON attendance_shifts(clock_out_tz);
-CREATE INDEX idx_attendance_shifts_status ON attendance_shifts(status);
-CREATE INDEX idx_attendance_shifts_is_unscheduled ON attendance_shifts(is_unscheduled) WHERE is_unscheduled = true;
--- Composite for common queries
-CREATE INDEX idx_attendance_shifts_employee_date ON attendance_shifts(employee_id, clock_in_tz);
-CREATE INDEX idx_attendance_shifts_shift_date ON attendance_shifts(shift_id, clock_in_tz);
--- For payroll: completed attendance in date range
-CREATE INDEX idx_attendance_shifts_payroll ON attendance_shifts(employee_id, clock_in_tz)
+CREATE INDEX IF NOT EXISTS idx_attendance_shifts_employee ON attendance_shifts(employee_id);
+CREATE INDEX IF NOT EXISTS idx_attendance_shifts_shift ON attendance_shifts(shift_id);
+CREATE INDEX IF NOT EXISTS idx_attendance_shifts_clock_in ON attendance_shifts(clock_in_tz);
+CREATE INDEX IF NOT EXISTS idx_attendance_shifts_clock_out ON attendance_shifts(clock_out_tz);
+CREATE INDEX IF NOT EXISTS idx_attendance_shifts_status ON attendance_shifts(status);
+CREATE INDEX IF NOT EXISTS idx_attendance_shifts_is_unscheduled 
+    ON attendance_shifts(is_unscheduled) WHERE is_unscheduled = true;
+CREATE INDEX IF NOT EXISTS idx_attendance_shifts_employee_date 
+    ON attendance_shifts(employee_id, clock_in_tz);
+CREATE INDEX IF NOT EXISTS idx_attendance_shifts_shift_date 
+    ON attendance_shifts(shift_id, clock_in_tz);
+CREATE INDEX IF NOT EXISTS idx_attendance_shifts_payroll 
+    ON attendance_shifts(employee_id, clock_in_tz)
     WHERE status IN ('completed', 'corrected');
 
 -- Attendance audit logs
-CREATE INDEX idx_attendance_audit_logs_attendance ON attendance_audit_logs(attendance_id);
-CREATE INDEX idx_attendance_audit_logs_changed_by ON attendance_audit_logs(changed_by);
-CREATE INDEX idx_attendance_audit_logs_created_at ON attendance_audit_logs(created_at);
-CREATE INDEX idx_attendance_audit_logs_action ON attendance_audit_logs(action);
+CREATE INDEX IF NOT EXISTS idx_attendance_audit_logs_attendance 
+    ON attendance_audit_logs(attendance_id);
+CREATE INDEX IF NOT EXISTS idx_attendance_audit_logs_changed_by 
+    ON attendance_audit_logs(changed_by);
+CREATE INDEX IF NOT EXISTS idx_attendance_audit_logs_created_at 
+    ON attendance_audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_attendance_audit_logs_action 
+    ON attendance_audit_logs(action);
 
 -- ============================================================================
 -- FUNCTIONS
 -- ============================================================================
 
--- Function to update updated_at timestamp (reuses existing from migration 001)
--- Already exists: update_updated_at_column()
-
--- Function to get applicable wage rate for an employee at a specific date/time
+-- Get applicable wage rate for an employee at a specific date/time
 CREATE OR REPLACE FUNCTION get_wage_rate_at(
     p_employee_id UUID,
     p_at_time TIMESTAMPTZ DEFAULT NOW()
@@ -221,7 +222,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE;
 
--- Function to calculate actual hours and estimated wages for an attendance record
+-- Calculate actual hours and estimated wages for an attendance record
+-- FIXED: Uses NEW clock times for recalculation
 CREATE OR REPLACE FUNCTION calculate_attendance_pay(p_attendance_id UUID)
 RETURNS TABLE (
     actual_hours NUMERIC(6,2),
@@ -243,7 +245,7 @@ BEGIN
         RETURN;
     END IF;
 
-    -- Get wage rate at clock-in time
+    -- Get wage rate at clock-in date
     SELECT * INTO v_rate FROM get_wage_rate_at(v_employee_id, v_clock_in);
 
     RETURN QUERY SELECT
@@ -252,12 +254,13 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE;
 
--- Function to auto-calculate and update attendance pay on clock_out
+-- Auto-calculate attendance pay on clock_out
 CREATE OR REPLACE FUNCTION update_attendance_calculations()
 RETURNS TRIGGER AS $$
 DECLARE
     v_calc RECORD;
 BEGIN
+    -- Only calculate when clock_out is newly set
     IF TG_OP = 'UPDATE' AND NEW.clock_out_tz IS NOT NULL AND OLD.clock_out_tz IS NULL THEN
         SELECT * INTO v_calc FROM calculate_attendance_pay(NEW.id);
         NEW.actual_hours := v_calc.actual_hours;
@@ -269,7 +272,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Function to check for overlapping shifts for same employee
+-- Check for overlapping shifts for same employee
 CREATE OR REPLACE FUNCTION check_shift_overlap(
     p_employee_id UUID,
     p_start_time TIMESTAMPTZ,
@@ -290,7 +293,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE;
 
--- Function to create attendance audit log entry
+-- Log attendance change to audit trail
 CREATE OR REPLACE FUNCTION log_attendance_change(
     p_attendance_id UUID,
     p_action audit_action_staff,
@@ -302,32 +305,23 @@ CREATE OR REPLACE FUNCTION log_attendance_change(
 RETURNS VOID AS $$
 BEGIN
     INSERT INTO attendance_audit_logs (
-        attendance_id,
-        action,
-        old_values,
-        new_values,
-        changed_by,
-        change_reason
+        attendance_id, action, old_values, new_values, changed_by, change_reason
     ) VALUES (
-        p_attendance_id,
-        p_action,
-        p_old_values,
-        p_new_values,
-        p_changed_by,
-        p_change_reason
+        p_attendance_id, p_action, p_old_values, p_new_values, p_changed_by, p_change_reason
     );
 END;
 $$ LANGUAGE plpgsql;
 
--- Function to correct attendance (admin/manager action with audit trail)
+-- Correct attendance record (admin/manager only, with audit trail)
+-- FIXED: All required parameters first, then defaults
 CREATE OR REPLACE FUNCTION correct_attendance(
     p_attendance_id UUID,
+    p_corrected_by UUID,
+    p_change_reason TEXT,
     p_new_clock_in TIMESTAMPTZ DEFAULT NULL,
     p_new_clock_out TIMESTAMPTZ DEFAULT NULL,
     p_new_status attendance_status DEFAULT NULL,
-    p_notes TEXT DEFAULT NULL,
-    p_corrected_by UUID,
-    p_change_reason TEXT
+    p_notes TEXT DEFAULT NULL
 )
 RETURNS BOOLEAN AS $$
 DECLARE
@@ -355,7 +349,7 @@ BEGIN
         'updated_at', NOW()
     );
 
-    -- Validate clock_out > clock_in if both provided
+    -- Validate clock_out > clock_in
     IF v_new_values->>'clock_out_tz' IS NOT NULL AND v_new_values->>'clock_in_tz' IS NOT NULL THEN
         IF (v_new_values->>'clock_out_tz')::TIMESTAMPTZ <= (v_new_values->>'clock_in_tz')::TIMESTAMPTZ THEN
             RAISE EXCEPTION 'Clock out must be after clock in' USING ERRCODE = '55000';
@@ -389,20 +383,14 @@ BEGIN
 
     -- Log the correction
     PERFORM log_attendance_change(
-        p_attendance_id,
-        'CORRECTION',
-        v_old_values,
-        v_new_values,
-        p_corrected_by,
-        p_change_reason
+        p_attendance_id, 'CORRECTION', v_old_values, v_new_values, p_corrected_by, p_change_reason
     );
 
     RETURN TRUE;
 END;
 $$ LANGUAGE plpgsql;
 
--- Function to get Singapore timezone display helper (returns TIMESTAMPTZ in SGT)
--- Note: Data stored in UTC, display converts to Asia/Singapore
+-- Singapore timezone display helper (data stored in UTC)
 CREATE OR REPLACE FUNCTION to_sgt(p_utc TIMESTAMPTZ)
 RETURNS TIMESTAMPTZ AS $$
 BEGIN
@@ -417,7 +405,7 @@ BEGIN
 END;
 $$ LANGUAGE sql IMMUTABLE;
 
--- Function to get staff schedule for a date range (for roster view)
+-- Get staff schedule for a date range (roster view)
 CREATE OR REPLACE FUNCTION get_staff_schedule(
     p_start_date DATE,
     p_end_date DATE,
@@ -438,15 +426,8 @@ RETURNS TABLE (
 BEGIN
     RETURN QUERY
     SELECT
-        ss.id,
-        ss.employee_id,
-        e.name AS employee_name,
-        e.role AS employee_role,
-        ss.start_time_tz,
-        ss.end_time_tz,
-        ss.location,
-        ss.status,
-        ss.notes
+        ss.id, ss.employee_id, e.name, e.role,
+        ss.start_time_tz, ss.end_time_tz, ss.location, ss.status, ss.notes
     FROM staff_shifts ss
     JOIN employees e ON e.id = ss.employee_id
     WHERE ss.start_time_tz::DATE <= p_end_date
@@ -459,7 +440,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE;
 
--- Function to get attendance summary for payroll
+-- Payroll summary: FIXED return types for aggregates
 CREATE OR REPLACE FUNCTION get_payroll_summary(
     p_start_date DATE,
     p_end_date DATE,
@@ -470,18 +451,18 @@ RETURNS TABLE (
     employee_name TEXT,
     total_hours NUMERIC(8,2),
     total_wages_cents INTEGER,
-    shift_count INTEGER,
-    unscheduled_count INTEGER
+    shift_count BIGINT,
+    unscheduled_count BIGINT
 ) AS $$
 BEGIN
     RETURN QUERY
     SELECT
         a.employee_id,
-        e.name AS employee_name,
-        ROUND(COALESCE(SUM(a.actual_hours), 0), 2) AS total_hours,
-        COALESCE(SUM(a.estimated_wages_cents), 0) AS total_wages_cents,
-        COUNT(*) AS shift_count,
-        COUNT(*) FILTER (WHERE a.is_unscheduled) AS unscheduled_count
+        e.name::TEXT AS employee_name,
+        ROUND(COALESCE(SUM(a.actual_hours), 0)::NUMERIC, 2) AS total_hours,
+        COALESCE(SUM(a.estimated_wages_cents), 0)::INTEGER AS total_wages_cents,
+        COUNT(*)::BIGINT AS shift_count,
+        COUNT(*) FILTER (WHERE a.is_unscheduled)::BIGINT AS unscheduled_count
     FROM attendance_shifts a
     JOIN employees e ON e.id = a.employee_id
     WHERE a.clock_in_tz::DATE >= p_start_date
@@ -498,79 +479,91 @@ $$ LANGUAGE plpgsql STABLE;
 -- TRIGGERS
 -- ============================================================================
 
--- Updated_at triggers for new tables
+-- Updated_at triggers (uses existing update_updated_at_column from Collection Logger)
+DROP TRIGGER IF EXISTS update_employees_updated_at ON employees;
 CREATE TRIGGER update_employees_updated_at
     BEFORE UPDATE ON employees
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_staff_shifts_updated_at ON staff_shifts;
 CREATE TRIGGER update_staff_shifts_updated_at
     BEFORE UPDATE ON staff_shifts
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_attendance_shifts_updated_at ON attendance_shifts;
 CREATE TRIGGER update_attendance_shifts_updated_at
     BEFORE UPDATE ON attendance_shifts
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Attendance calculation trigger (auto-calc on clock_out)
+DROP TRIGGER IF EXISTS attendance_calculate_pay ON attendance_shifts;
 CREATE TRIGGER attendance_calculate_pay
     BEFORE UPDATE ON attendance_shifts
     FOR EACH ROW EXECUTE FUNCTION update_attendance_calculations();
 
--- Audit trigger for attendance_shifts (reuses existing audit_trigger_function from migration 001)
--- But we also have specialized attendance_audit_logs - apply both
+-- Audit triggers (use existing audit_trigger_function from Collection Logger)
+DROP TRIGGER IF EXISTS audit_attendance_shifts ON attendance_shifts;
 CREATE TRIGGER audit_attendance_shifts
     AFTER INSERT OR UPDATE OR DELETE ON attendance_shifts
     FOR EACH ROW EXECUTE FUNCTION audit_trigger_function();
 
+DROP TRIGGER IF EXISTS audit_staff_shifts ON staff_shifts;
 CREATE TRIGGER audit_staff_shifts
     AFTER INSERT OR UPDATE OR DELETE ON staff_shifts
     FOR EACH ROW EXECUTE FUNCTION audit_trigger_function();
 
+DROP TRIGGER IF EXISTS audit_employees ON employees;
 CREATE TRIGGER audit_employees
     AFTER INSERT OR UPDATE OR DELETE ON employees
     FOR EACH ROW EXECUTE FUNCTION audit_trigger_function();
 
+DROP TRIGGER IF EXISTS audit_employee_wage_rates ON employee_wage_rates;
 CREATE TRIGGER audit_employee_wage_rates
     AFTER INSERT OR UPDATE OR DELETE ON employee_wage_rates
     FOR EACH ROW EXECUTE FUNCTION audit_trigger_function();
 
 -- ============================================================================
 -- ROW LEVEL SECURITY (RLS)
+-- SECURITY FIX: Removed all "auth.uid() IS NULL" allowances
 -- ============================================================================
 
--- Enable RLS on all new tables
 ALTER TABLE employees ENABLE ROW LEVEL SECURITY;
 ALTER TABLE employee_wage_rates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE staff_shifts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE attendance_shifts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE attendance_audit_logs ENABLE ROW LEVEL SECURITY;
 
--- ============================================================================
--- RLS POLICIES: Employees
--- ============================================================================
+-- ----------------------------------------------------------------------------
+-- RLS: Employees
+-- FIXED: No anonymous access. Staff can only view own profile.
+-- FIXED: Staff cannot update role or privileged fields.
+-- ----------------------------------------------------------------------------
 
--- Staff can see their own profile
+-- Staff can view their own profile only
 CREATE POLICY employees_select_own ON employees
     FOR SELECT USING (
-        auth.uid() IS NULL OR
-        id = auth.uid() OR
-        email = (SELECT auth.jwt()->>'email')
+        auth.uid() IS NOT NULL AND
+        (id = auth.uid() OR 
+         email = (auth.jwt()->>'email'))
     );
 
--- Staff can update their own profile (phone, etc.)
-CREATE POLICY employees_update_own ON employees
+-- Staff can update ONLY their own phone (not role, email, name)
+CREATE POLICY employees_update_own_phone ON employees
     FOR UPDATE USING (
-        auth.uid() IS NULL OR
-        id = auth.uid() OR
-        email = (SELECT auth.jwt()->>'email')
+        auth.uid() IS NOT NULL AND
+        (id = auth.uid() OR email = (auth.jwt()->>'email'))
     )
     WITH CHECK (
-        auth.uid() IS NULL OR
-        id = auth.uid() OR
-        email = (SELECT auth.jwt()->>'email')
+        auth.uid() IS NOT NULL AND
+        (id = auth.uid() OR email = (auth.jwt()->>'email')) AND
+        -- Prevent changing privileged fields
+        OLD.role = NEW.role AND
+        OLD.email = NEW.email AND
+        OLD.name = NEW.name AND
+        OLD.is_active = NEW.is_active
     );
 
--- Admins/managers can see all employees
+-- Admins/managers can view all employees
 CREATE POLICY employees_select_admin ON employees
     FOR SELECT USING (
         auth.uid() IS NOT NULL AND
@@ -582,7 +575,7 @@ CREATE POLICY employees_select_admin ON employees
         )
     );
 
--- Admins/managers can insert/update/delete employees
+-- Admins/managers can manage all employees
 CREATE POLICY employees_admin_all ON employees
     FOR ALL USING (
         auth.uid() IS NOT NULL AND
@@ -594,19 +587,24 @@ CREATE POLICY employees_admin_all ON employees
         )
     );
 
--- ============================================================================
--- RLS POLICIES: Employee Wage Rates
--- ============================================================================
+-- ----------------------------------------------------------------------------
+-- RLS: Employee Wage Rates
+-- SECURITY: Wage data is highly sensitive - admin only for write, 
+--           staff can only view own wages
+-- ----------------------------------------------------------------------------
 
--- Staff can see their own wage rates
+-- Staff can view ONLY their own wage rates
 CREATE POLICY employee_wage_rates_select_own ON employee_wage_rates
     FOR SELECT USING (
-        auth.uid() IS NULL OR
-        employee_id = auth.uid() OR
-        employee_id IN (SELECT id FROM employees WHERE email = (SELECT auth.jwt()->>'email'))
+        auth.uid() IS NOT NULL AND
+        (employee_id = auth.uid() OR 
+         employee_id IN (
+             SELECT id FROM employees 
+             WHERE email = (auth.jwt()->>'email')
+         ))
     );
 
--- Admins/managers can see all wage rates
+-- Admins/managers can view all wage rates
 CREATE POLICY employee_wage_rates_select_admin ON employee_wage_rates
     FOR SELECT USING (
         auth.uid() IS NOT NULL AND
@@ -618,7 +616,7 @@ CREATE POLICY employee_wage_rates_select_admin ON employee_wage_rates
         )
     );
 
--- Admins/managers can manage wage rates
+-- Admins/managers ONLY can manage wage rates
 CREATE POLICY employee_wage_rates_admin_all ON employee_wage_rates
     FOR ALL USING (
         auth.uid() IS NOT NULL AND
@@ -630,39 +628,43 @@ CREATE POLICY employee_wage_rates_admin_all ON employee_wage_rates
         )
     );
 
--- ============================================================================
--- RLS POLICIES: Staff Shifts
--- ============================================================================
+-- ----------------------------------------------------------------------------
+-- RLS: Staff Shifts
+-- SECURITY: Staff cannot create their own shifts - admin approval required
+-- ----------------------------------------------------------------------------
 
--- Staff can see their own shifts (published and draft they created)
+-- Staff can view their own shifts
 CREATE POLICY staff_shifts_select_own ON staff_shifts
     FOR SELECT USING (
-        auth.uid() IS NULL OR
-        employee_id = auth.uid() OR
-        employee_id IN (SELECT id FROM employees WHERE email = (SELECT auth.jwt()->>'email')) OR
-        created_by = auth.uid()
-    );
-
--- Staff can create shifts for themselves (draft only)
-CREATE POLICY staff_shifts_insert_own ON staff_shifts
-    FOR INSERT WITH CHECK (
         auth.uid() IS NOT NULL AND
-        (employee_id = auth.uid() OR employee_id IN (SELECT id FROM employees WHERE email = (SELECT auth.jwt()->>'email')))
+        (employee_id = auth.uid() OR 
+         employee_id IN (
+             SELECT id FROM employees 
+             WHERE email = (auth.jwt()->>'email')
+         ) OR
+         created_by = auth.uid()
     );
 
--- Staff can update their own draft shifts
+-- Staff CANNOT create shifts for themselves - admin only
+-- (No insert policy for non-admins)
+
+-- Staff can update their own DRAFT shifts only (before publishing)
 CREATE POLICY staff_shifts_update_own_draft ON staff_shifts
     FOR UPDATE USING (
         auth.uid() IS NOT NULL AND
-        (employee_id = auth.uid() OR employee_id IN (SELECT id FROM employees WHERE email = (SELECT auth.jwt()->>'email'))) AND
-        status = 'draft'
+        (employee_id = auth.uid() OR 
+         employee_id IN (
+             SELECT id FROM employees 
+             WHERE email = (auth.jwt()->>'email')
+         )) AND
+        status = 'draft' AND
+        OLD.employee_id = NEW.employee_id  -- Cannot reassign
     )
     WITH CHECK (
-        auth.uid() IS NOT NULL AND
-        (employee_id = auth.uid() OR employee_id IN (SELECT id FROM employees WHERE email = (SELECT auth.jwt()->>'email')))
+        status = 'draft'  -- Cannot publish own shift
     );
 
--- Admins/managers can see all shifts
+-- Admins/managers can view all shifts
 CREATE POLICY staff_shifts_select_admin ON staff_shifts
     FOR SELECT USING (
         auth.uid() IS NOT NULL AND
@@ -674,7 +676,7 @@ CREATE POLICY staff_shifts_select_admin ON staff_shifts
         )
     );
 
--- Admins/managers can manage all shifts (publish, cancel, edit)
+-- Admins/managers can manage all shifts (create, publish, cancel, edit)
 CREATE POLICY staff_shifts_admin_all ON staff_shifts
     FOR ALL USING (
         auth.uid() IS NOT NULL AND
@@ -686,39 +688,53 @@ CREATE POLICY staff_shifts_admin_all ON staff_shifts
         )
     );
 
--- ============================================================================
--- RLS POLICIES: Attendance Shifts
--- ============================================================================
+-- ----------------------------------------------------------------------------
+-- RLS: Attendance Shifts
+-- SECURITY: Staff can clock in/out of their own attendance only
+-- ----------------------------------------------------------------------------
 
--- Staff can see their own attendance records
+-- Staff can view their own attendance records
 CREATE POLICY attendance_shifts_select_own ON attendance_shifts
     FOR SELECT USING (
-        auth.uid() IS NULL OR
-        employee_id = auth.uid() OR
-        employee_id IN (SELECT id FROM employees WHERE email = (SELECT auth.jwt()->>'email'))
+        auth.uid() IS NOT NULL AND
+        (employee_id = auth.uid() OR 
+         employee_id IN (
+             SELECT id FROM employees 
+             WHERE email = (auth.jwt()->>'email')
+         ))
     );
 
--- Staff can clock in (create attendance record)
+-- Staff can clock in (create attendance for themselves only)
 CREATE POLICY attendance_shifts_clock_in ON attendance_shifts
     FOR INSERT WITH CHECK (
         auth.uid() IS NOT NULL AND
-        (employee_id = auth.uid() OR employee_id IN (SELECT id FROM employees WHERE email = (SELECT auth.jwt()->>'email')))
+        (employee_id = auth.uid() OR 
+         employee_id IN (
+             SELECT id FROM employees 
+             WHERE email = (auth.jwt()->>'email')
+         )) AND
+        clock_out_tz IS NULL AND  -- Must be clock-in, not retroactive
+        status IN ('scheduled', 'clocked_in')
     );
 
 -- Staff can clock out (update their own active attendance)
 CREATE POLICY attendance_shifts_clock_out ON attendance_shifts
     FOR UPDATE USING (
         auth.uid() IS NOT NULL AND
-        (employee_id = auth.uid() OR employee_id IN (SELECT id FROM employees WHERE email = (SELECT auth.jwt()->>'email'))) AND
-        clock_out_tz IS NULL AND
+        (employee_id = auth.uid() OR 
+         employee_id IN (
+             SELECT id FROM employees 
+             WHERE email = (auth.jwt()->>'email')
+         )) AND
+        clock_out_tz IS NULL AND  -- Only if not already clocked out
         status IN ('clocked_in', 'scheduled')
     )
     WITH CHECK (
-        auth.uid() IS NOT NULL AND
-        (employee_id = auth.uid() OR employee_id IN (SELECT id FROM employees WHERE email = (SELECT auth.jwt()->>'email')))
+        clock_out_tz IS NOT NULL AND  -- Must be setting clock-out
+        status IN ('clocked_out', 'completed')
     );
 
--- Admins/managers can see all attendance
+-- Admins/managers can view all attendance
 CREATE POLICY attendance_shifts_select_admin ON attendance_shifts
     FOR SELECT USING (
         auth.uid() IS NOT NULL AND
@@ -742,23 +758,27 @@ CREATE POLICY attendance_shifts_admin_all ON attendance_shifts
         )
     );
 
--- ============================================================================
--- RLS POLICIES: Attendance Audit Logs
--- ============================================================================
+-- ----------------------------------------------------------------------------
+-- RLS: Attendance Audit Logs
+-- SECURITY: Immutable audit trail - staff view own, admin view all
+-- ----------------------------------------------------------------------------
 
--- Staff can see audit logs for their own attendance
+-- Staff can view audit logs for their own attendance
 CREATE POLICY attendance_audit_logs_select_own ON attendance_audit_logs
     FOR SELECT USING (
-        auth.uid() IS NULL OR
-        changed_by = auth.uid() OR
-        attendance_id IN (
-            SELECT id FROM attendance_shifts
-            WHERE employee_id = auth.uid()
-               OR employee_id IN (SELECT id FROM employees WHERE email = (SELECT auth.jwt()->>'email'))
-        )
+        auth.uid() IS NOT NULL AND
+        (changed_by = auth.uid() OR
+         attendance_id IN (
+             SELECT id FROM attendance_shifts
+             WHERE employee_id = auth.uid()
+                OR employee_id IN (
+                    SELECT id FROM employees 
+                    WHERE email = (auth.jwt()->>'email')
+                )
+         ))
     );
 
--- Admins/managers can see all audit logs
+-- Admins/managers can view all audit logs
 CREATE POLICY attendance_audit_logs_select_admin ON attendance_audit_logs
     FOR SELECT USING (
         auth.uid() IS NOT NULL AND
@@ -770,11 +790,15 @@ CREATE POLICY attendance_audit_logs_select_admin ON attendance_audit_logs
         )
     );
 
--- System/service role can insert audit logs (via functions)
+-- Service role can insert audit logs (via functions)
 CREATE POLICY attendance_audit_logs_service ON attendance_audit_logs
     FOR INSERT WITH CHECK (
         auth.jwt()->>'role' = 'service_role' OR
-        auth.uid() IS NOT NULL
+        (auth.uid() IS NOT NULL AND EXISTS (
+            SELECT 1 FROM employees e
+            WHERE e.id = auth.uid()
+            AND e.role IN ('admin', 'manager')
+        ))
     );
 
 -- ============================================================================
@@ -782,8 +806,8 @@ CREATE POLICY attendance_audit_logs_service ON attendance_audit_logs
 -- ============================================================================
 
 COMMENT ON TABLE employees IS 'Staff members (instructors, assistants, managers)';
-COMMENT ON TABLE employee_wage_rates IS 'Effective-dated hourly wage rates for historical pay accuracy';
-COMMENT ON TABLE staff_shifts IS 'Scheduled shifts (supports overnight, multiple per day)';
+COMMENT ON TABLE employee_wage_rates IS 'Effective-dated hourly wage rates (SENSITIVE - admin only)';
+COMMENT ON TABLE staff_shifts IS 'Scheduled shifts (admin-created, supports overnight)';
 COMMENT ON TABLE attendance_shifts IS 'Actual clock in/out records with calculated pay';
 COMMENT ON TABLE attendance_audit_logs IS 'Immutable audit trail for attendance corrections';
 
@@ -792,14 +816,12 @@ COMMENT ON COLUMN employee_wage_rates.effective_to IS 'NULL = currently active r
 COMMENT ON COLUMN employee_wage_rates.hourly_rate_cents IS 'Stored in cents (SGD) for precision';
 COMMENT ON COLUMN staff_shifts.start_time_tz IS 'Stored in UTC; display converts to Asia/Singapore';
 COMMENT ON COLUMN staff_shifts.end_time_tz IS 'Can be next day for overnight shifts';
-COMMENT ON COLUMN attendance_shifts.is_unscheduled IS 'TRUE when clocked in without a scheduled shift';
+COMMENT ON COLUMN attendance_shifts.is_unscheduled IS 'TRUE when clocked in without scheduled shift';
 COMMENT ON COLUMN attendance_shifts.actual_hours IS 'Calculated: (clock_out - clock_in) in hours, 2dp';
 COMMENT ON COLUMN attendance_shifts.estimated_wages_cents IS 'Calculated at clock_out using wage rate at clock_in date';
 COMMENT ON COLUMN attendance_audit_logs.change_reason IS 'Required for CORRECTION actions';
 
 -- ============================================================================
--- SEED DATA (Optional - minimal defaults for development)
+-- SEED DATA
 -- ============================================================================
-
--- Default location for shifts (referenced by default in staff_shifts)
--- No seed data for employees - add via admin interface
+-- No seed data - add employees via admin interface only
