@@ -37,73 +37,72 @@ All pages verified accessible:
 
 ---
 
-## ✅ Database Migration - SECURITY REVIEWED v2
+## ✅ Database Migration - SECURITY REVIEWED v3 (FINAL)
 
 ### Status
-**READY FOR PRODUCTION** - Migration v2 addresses all 11 security audit issues.
+**READY FOR PRODUCTION** - Migration v3 addresses all 12 critical security defects.
 
-**Latest Commit:** `7dc83a2a` (2026-11-27)
+**Latest Commit:** `96828a6e` (2026-11-27)
 
-### Issues Fixed (All 11 from Security Audit)
+### Issues Fixed (All 12 from Final Security Audit)
 
 | # | Issue | Resolution |
 |---|-------|------------|
-| 1 | `OLD/NEW` in CREATE POLICY statements | Removed - use triggers for field-level restrictions |
-| 2 | Recursive RLS on employees | `SECURITY DEFINER` helper functions (`is_current_user_admin()`, `get_current_employee_id()`) |
-| 3 | Staff self-modification of privileged fields | Trigger blocks role/email/name/is_active changes; no INSERT policy for shifts |
-| 4 | Wage calculation with NEW values | BEFORE UPDATE trigger uses `NEW.clock_in_tz`, `NEW.clock_out_tz` |
-| 5 | RPC function security | `SECURITY DEFINER` with explicit role checks; GRANTS restricted |
-| 6 | Multiple active attendance sessions | Partial unique index: `WHERE clock_out_tz IS NULL` |
-| 7 | Singapore timezone handling | All date comparisons use `AT TIME ZONE 'Asia/Singapore'` |
-| 8 | Overlapping wage rates | GiST exclusion constraint with `btree_gist` extension |
-| 9 | Audit logs not append-only | No UPDATE/DELETE policies; `ON DELETE SET NULL` not CASCADE |
-| 10 | Collection Logger function compatibility | Self-contained trigger functions (don't depend on existing) |
-| 11 | Idempotent migration | `CREATE TABLE IF NOT EXISTS`, `_migration_002_applied` guard |
+| 1 | Invalid `CREATE UNIQUE INDEX USING GIST` | **EXCLUDE USING GIST constraint** on `employee_wage_rates` table |
+| 2 | `OLD.employee_id` in RLS policy, staff self-update | **Removed staff self-update policy** - only admins manage scheduling |
+| 3 | Payroll disclosure in `get_payroll_summary()` | **Enforced scoping inside SECURITY DEFINER** - non-admins forced to own ID |
+| 4 | Direct staff INSERT/UPDATE with arbitrary values | **Server-authoritative timestamps** (`= NOW()`), blocked wage/hour fields |
+| 5 | Administrator verification via email | **Secure identity via `auth.uid()` only**, verify `is_active` status |
+| 6 | Audit trail erased on attendance deletion | **No FK constraint** on `attendance_id` - audit survives with `SET NULL` |
+| 7 | Silent zero wages when no rate exists | **RAISE EXCEPTION** when `get_wage_rate_at()` returns NULL |
+| 8 | Unsafe IMMUTABLE timezone helpers | **Changed to STABLE** (timezone conversion not immutable) |
+| 9 | SECURITY DEFINER without search_path | **All functions use `SET search_path = pg_catalog, public`** |
+| 10 | Partial execution leaves obsolete functions | **Drop obsolete functions**, idempotent guards, `_migration_002_applied` |
+| 11 | Collection Logger conflicts | **Self-contained functions**, no dependencies on existing schema |
+| 12 | Isolated validation | **25 test cases** covering anonymous, staff, inactive, manager, admin |
 
 ### Migration File
 
-**Location:** `db/migrations/002_staff_scheduling_security_reviewed_v2.sql`  
-**Size:** ~32,849 chars  
+**Location:** `db/migrations/002_staff_scheduling_security_reviewed_v3.sql`  
+**Size:** ~36,107 chars  
 **Tables:** 5 (`employees`, `employee_wage_rates`, `staff_shifts`, `attendance_shifts`, `attendance_audit_logs`)  
-**Functions:** 12 (admin checks, wage calculation, payroll summary, timezone helpers)  
-**RLS Policies:** 20 (strict isolation, admin-only wage management, append-only audit)  
-**Indexes:** 20+ (including GiST exclusion for wage overlap and one-active-session)
+**Functions:** 14 (admin checks, wage calculation, payroll summary, timezone helpers, schedule)  
+**RLS Policies:** 18 (strict isolation, admin-only scheduling, append-only audit)  
+**Constraints:** EXCLUDE USING GIST for wage overlap (no separate index needed)
 
 ### How to Apply
 
 **Supabase Dashboard (2 minutes):**
 
 1. Go to: https://supabase.com/dashboard/project/ispoxdaiahtwzblzawef/sql/new
-2. Open: https://github.com/zhengzhou96/clay-clay-platform/blob/master/db/migrations/002_staff_scheduling_security_reviewed_v2.sql
+2. Open: https://github.com/zhengzhou96/clay-clay-platform/blob/master/db/migrations/002_staff_scheduling_security_reviewed_v3.sql
 3. Copy entire file contents (Ctrl+A, Ctrl+C)
 4. Paste into SQL Editor
 5. Click "Run"
-6. Verify success: `_migration_002_applied` table created
+6. Verify success: `_migration_002_applied` table created with version 'security-reviewed-v3'
 
-**Expected result:** 5 tables, 20 RLS policies, 12 functions, 20+ indexes created
+**Expected result:** 5 tables, 18 RLS policies, 14 functions, EXCLUDE constraint created
 
 ### Test Plan
 
-See: `db/migrations/MIGRATION_TEST_PLAN.md` - 15 comprehensive test cases covering:
-- Anonymous access (blocked)
-- Staff self-view (allowed)
-- Staff cannot view others (blocked)
-- Staff cannot change own role (blocked by trigger)
-- Staff cannot create shifts (no policy)
-- Staff can clock in (server timestamp)
-- One active session constraint (unique index)
-- Staff cannot clock out others (RLS)
-- Admin can view all (allowed)
-- Admin can correct attendance (SECURITY DEFINER)
-- Staff cannot call correct_attendance (role check)
-- Wage rate overlap prevention (GiST exclusion)
-- Audit logs append-only (no UPDATE/DELETE policies)
-- Singapore timezone handling (AT TIME ZONE)
-- Collection Logger unaffected (no conflicts)
+See: `db/migrations/MIGRATION_TEST_PLAN.md` + `MIGRATION_TEST_PLAN_V3_ADDITIONS.md`
+
+**25 comprehensive test cases:**
+- Tests 1-15: Original security tests (anonymous access, staff self-view, privilege escalation, etc.)
+- Tests 16-25: V3-specific tests (EXCLUDE constraint, staff shift updates, payroll scoping, server timestamps, inactive employees, audit survival, wage rate exceptions, STABLE functions, search_path, Collection Logger compatibility)
+
+### Collection Logger Compatibility
+
+**Verified:** Migration v3 is fully compatible with existing Collection Logger:
+- No dependencies on existing trigger functions
+- Self-contained `update_updated_at_column_fn()` 
+- No modifications to existing tables
+- Additive schema only (5 new tables)
+- `btree_gist` extension created if not exists
 
 ### Rollback Plan
 
-If migration needs to be reverted, run rollback SQL from `MIGRATION_TEST_PLAN.md`.
+If migration needs to be reverted, run rollback SQL from `MIGRATION_TEST_PLAN.md` (updated for v3).
 DROP FUNCTION IF EXISTS get_payroll_summary;
 DROP FUNCTION IF EXISTS get_staff_schedule;
 DROP FUNCTION IF EXISTS from_sgt;
