@@ -1,8 +1,9 @@
 # Clay Clay Staff Scheduling MVP - Deployment Status
 
-**Date:** 2026-11-26  
-**Latest Commit:** `8ab67bd9e2aa7744ccd8aab8fe9f171d4c399bac`  
-**Production URL:** https://clay-clay-platform.vercel.app
+**Date:** 2026-11-27  
+**Latest Commit:** `73dfbd65` - Fix migration endpoint: use direct REST API calls  
+**Production URL:** https://clay-clay-platform.vercel.app  
+**Supabase Project:** `ispoxdaiahtwzblzawef` (Clay Clay Collection Logger)
 
 ---
 
@@ -22,7 +23,8 @@
   - `SUPABASE_URL`
   - `SUPABASE_ANON_KEY`
   - `SUPABASE_SERVICE_ROLE_KEY`
-- **Source:** Reusing existing Supabase project `kbybqgdgryffzlnkwstu` (Blue Lantern / parttimer-tracker)
+- **Source:** Reusing existing Supabase project `ispoxdaiahtwzblzawef` (Clay Clay Collection Logger)
+- **Credentials:** All 5 Supabase environment variables configured in Vercel ✓
 
 ### 3. Page Accessibility
 All pages verified accessible:
@@ -56,19 +58,18 @@ The Supabase credentials are configured, but the database migration (`002_staff_
 
 ### How to Apply Migration
 
-**Option 1: Supabase Dashboard (Recommended)**
-1. Go to https://kbybqgdgryffzlnkwstu.supabase.co
-2. Navigate to SQL Editor
-3. Copy contents of `db/migrations/002_staff_scheduling.sql`
-4. Run the migration
+**Option 1: Supabase Dashboard (Recommended - 2 minutes)**
+1. Go to: https://supabase.com/dashboard/project/ispoxdaiahtwzblzawef/sql/new
+2. Copy contents of `db/migrations/002_staff_scheduling.sql` (11,490 chars)
+3. Paste into SQL Editor
+4. Click "Run"
+5. Verify tables created: `employees`, `employee_wage_rates`, `staff_shifts`, `attendance_shifts`, `attendance_audit_logs`
 
 **Option 2: Supabase CLI**
 ```bash
-supabase db push --db-url "postgres://postgres:[PASSWORD]@db.kbybqgdgryffzlnkwstu.supabase.co:5432/postgres"
+supabase db push --db-url "postgres://postgres.ispoxdaiahtwzblzawef:[SERVICE_ROLE_KEY]@db.ispoxdaiahtwzblzawef.supabase.co:5432/postgres"
 ```
-
-**Option 3: Vercel Post-Deploy Hook**
-The `/api/admin/run-migration` endpoint is available but requires SQL execution capability. Can be enhanced to run migration on first access.
+Note: Requires Supabase CLI authentication token.
 
 ---
 
@@ -109,8 +110,9 @@ The `/api/admin/run-migration` endpoint is available but requires SQL execution 
 - **Staff Portal:** https://clay-clay-platform.vercel.app/staff
 - **Admin Portal:** https://clay-clay-platform.vercel.app/admin/staff
 - **GitHub:** https://github.com/zhengzhou96/clay-clay-platform
-- **Supabase Project:** https://kbybqgdgryffzlnkwstu.supabase.co
-- **Vercel Project:** https://vercel.com/zhengzhoulimgmailcoms-projects/clay-clay-platform
+- **Supabase Dashboard:** https://supabase.com/dashboard/project/ispoxdaiahtwzblzawef
+- **Vercel Dashboard:** https://vercel.com/zhengzhoulimgmailcoms-projects/clay-clay-platform
+- **Collection Logger:** https://github.com/zhengzhou96/clay-clay-collection-logger
 
 ---
 
