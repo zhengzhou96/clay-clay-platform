@@ -1,27 +1,28 @@
 # Staff Scheduling Migration - Security Test Plan
 
-**Migration:** `db/migrations/002_staff_scheduling_security_reviewed_v2.sql`  
-**Commit:** `7dc83a2a`  
+**Migration:** `db/migrations/002_staff_scheduling_security_reviewed_v3.sql`  
+**Commit:** `189df367`  
 **Date:** 2026-11-27  
 **Supabase Project:** `ispoxdaiahtwzblzawef` (Clay Clay Collection Logger)
 
 ---
 
-## Security Issues Addressed
+## Security Issues Addressed (All 12)
 
 | # | Issue | Resolution |
 |---|-------|------------|
-| 1 | OLD/NEW in CREATE POLICY | Removed - use triggers for field-level restrictions |
-| 2 | Recursive RLS on employees | SECURITY DEFINER helper functions (`is_current_user_admin()`, `get_current_employee_id()`) |
-| 3 | Staff self-modification | Triggers block privileged field changes; no INSERT policy for shifts |
-| 4 | Wage calculation with NEW values | BEFORE UPDATE trigger uses `NEW.clock_in_tz`, `NEW.clock_out_tz` |
-| 5 | RPC function security | `SECURITY DEFINER` with explicit role checks; GRANTS restricted |
-| 6 | One active attendance session | Partial unique index: `WHERE clock_out_tz IS NULL` |
-| 7 | Singapore timezone handling | All date comparisons use `AT TIME ZONE 'Asia/Singapore'` |
-| 8 | Overlapping wage rates | GiST exclusion constraint with `btree_gist` extension |
-| 9 | Audit logs append-only | No UPDATE/DELETE policies; `ON DELETE SET NULL` not CASCADE |
-| 10 | Collection Logger compatibility | Self-contained trigger functions (don't depend on existing) |
-| 11 | Idempotent migration | `CREATE TABLE IF NOT EXISTS`, `CREATE ... IF NOT EXISTS`, `_migration_002_applied` guard |
+| 1 | Invalid `CREATE UNIQUE INDEX USING GIST` | **EXCLUDE USING GIST constraint** on `employee_wage_rates` table |
+| 2 | `OLD.employee_id` in RLS policy, staff self-update | **Removed staff self-update policy** - only admins manage scheduling |
+| 3 | Payroll disclosure in `get_payroll_summary()` | **Enforced scoping inside SECURITY DEFINER** - non-admins forced to own ID |
+| 4 | Direct staff INSERT/UPDATE with arbitrary values | **Server-authoritative timestamps** (`= NOW()`), blocked wage/hour fields |
+| 5 | Administrator verification via email | **Secure identity via `auth.uid()` only**, verify `is_active` status |
+| 6 | Audit trail erased on attendance deletion | **No FK constraint** on `attendance_id` - audit survives with `SET NULL` |
+| 7 | Silent zero wages when no rate exists | **RAISE EXCEPTION** when `get_wage_rate_at()` returns NULL |
+| 8 | Unsafe IMMUTABLE timezone helpers | **Changed to STABLE** (timezone conversion not immutable) |
+| 9 | SECURITY DEFINER without search_path | **All functions use `SET search_path = pg_catalog, public`** |
+| 10 | Partial execution leaves obsolete functions | **Drop obsolete functions**, idempotent guards, `_migration_002_applied` |
+| 11 | Collection Logger conflicts | **Self-contained functions**, no dependencies on existing schema |
+| 12 | Isolated validation | **15 test cases** covering anonymous, staff, inactive, manager, admin |
 
 ---
 
