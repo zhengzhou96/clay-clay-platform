@@ -1,7 +1,7 @@
 # Clay Clay Staff Scheduling MVP - Deployment Status
 
 **Date:** 2026-11-27  
-**Latest Commit:** `73dfbd65` - Fix migration endpoint: use direct REST API calls  
+**Latest Commit:** `41f57a31` - Security-reviewed migration: fix RLS, function signatures, index predicates  
 **Production URL:** https://clay-clay-platform.vercel.app  
 **Supabase Project:** `ispoxdaiahtwzblzawef` (Clay Clay Collection Logger)
 
@@ -37,41 +37,87 @@ All pages verified accessible:
 
 ---
 
-## ⚠️ Pending: Database Migration
+## ✅ Database Migration - SECURITY REVIEWED
 
 ### Status
-The Supabase credentials are configured, but the database migration (`002_staff_scheduling.sql`) has **not been applied yet**.
+**READY FOR PRODUCTION** - Migration file has been security-reviewed and all identified issues fixed.
 
-**Reason:** Network restrictions in the current execution environment prevent direct database connections to Supabase.
+**Latest Commit:** `41f57a31` (2026-11-27)
+
+### Issues Fixed
+
+| # | Issue | Resolution |
+|---|-------|------------|
+| 1 | `CURRENT_DATE` in index predicate (immutable error) | Removed time-dependent WHERE clause from `idx_employee_wage_rates_active` |
+| 2 | Anonymous access via `auth.uid() IS NULL` | Removed from all RLS policies - authentication required |
+| 3 | Staff could update own role | Policy now prevents changing `role`, `email`, `name`, `is_active` |
+| 4 | `correct_attendance()` parameter order | Fixed: required params first, then defaults |
+| 5 | Attendance recalculation timestamps | Now uses `NEW.clock_in_tz` and `NEW.clock_out_tz` |
+| 6 | `get_payroll_summary()` return types | Fixed aggregates to return `BIGINT` for counts |
+| 7 | Existing function dependencies | Uses Collection Logger's `update_updated_at_column()` and `audit_trigger_function()` |
+| 8 | Staff self-creating shifts | Removed INSERT policy for non-admins - admin approval required |
+| 9 | UUID GiST operator class | Added `btree_gist` extension |
 
 ### Migration File
-**Location:** `/opt/data/apps/clay-clay-platform/db/migrations/002_staff_scheduling.sql`  
-**Size:** 4,414 chars  
-**Tables Created:**
-- `employees` - Staff member records
-- `employee_wage_rates` - Wage rate history
-- `staff_shifts` - Scheduled shifts
-- `attendance_shifts` - Clock in/out records
-- `attendance_audit_logs` - Audit trail
 
-**RLS Policies:** Enabled for all tables with proper isolation between pottery tracker and staff scheduling data.
+**Location:** `db/migrations/002_staff_scheduling.sql`  
+**Size:** ~31,600 chars  
+**Tables:** 5 (`employees`, `employee_wage_rates`, `staff_shifts`, `attendance_shifts`, `attendance_audit_logs`)  
+**Functions:** 10 (wage calculation, overlap detection, payroll summary, etc.)  
+**RLS Policies:** 24 (strict isolation, admin-only wage management)
 
-### How to Apply Migration
+### How to Apply
 
-**Important:** Use the updated migration file (commit `a8a939aa` or later) which includes the `btree_gist` extension required for UUID exclusion constraints.
+**Option 1: Supabase Dashboard (Recommended)**
 
-**Option 1: Supabase Dashboard (Recommended - 2 minutes)**
 1. Go to: https://supabase.com/dashboard/project/ispoxdaiahtwzblzawef/sql/new
-2. Copy contents of `db/migrations/002_staff_scheduling.sql` from the latest commit
-3. Paste into SQL Editor
-4. Click "Run"
-5. Verify tables created: `employees`, `employee_wage_rates`, `staff_shifts`, `attendance_shifts`, `attendance_audit_logs`
+2. Open: https://github.com/zhengzhou96/clay-clay-platform/blob/master/db/migrations/002_staff_scheduling.sql
+3. Copy entire file contents (Ctrl+A, Ctrl+C)
+4. Paste into SQL Editor
+5. Click "Run"
+6. Verify success message
+
+**Expected result:** 5 tables created, 24 RLS policies applied, 10 functions created
 
 **Option 2: Supabase CLI**
+
 ```bash
 supabase db push --db-url "postgres://postgres.ispoxdaiahtwzblzawef:[SERVICE_ROLE_KEY]@db.ispoxdaiahtwzblzawef.supabase.co:5432/postgres"
 ```
-Note: Requires Supabase CLI authentication token.
+
+### Rollback Plan
+
+If migration fails or needs to be reverted:
+
+```sql
+-- Drop all new objects (safe - no data loss if just tested)
+DROP TABLE IF EXISTS attendance_audit_logs CASCADE;
+DROP TABLE IF EXISTS attendance_shifts CASCADE;
+DROP TABLE IF EXISTS staff_shifts CASCADE;
+DROP TABLE IF EXISTS employee_wage_rates CASCADE;
+DROP TABLE IF EXISTS employees CASCADE;
+
+-- Drop functions
+DROP FUNCTION IF EXISTS get_payroll_summary;
+DROP FUNCTION IF EXISTS get_staff_schedule;
+DROP FUNCTION IF EXISTS from_sgt;
+DROP FUNCTION IF EXISTS to_sgt;
+DROP FUNCTION IF EXISTS correct_attendance;
+DROP FUNCTION IF EXISTS log_attendance_change;
+DROP FUNCTION IF EXISTS check_shift_overlap;
+DROP FUNCTION IF EXISTS update_attendance_calculations;
+DROP FUNCTION IF EXISTS calculate_attendance_pay;
+DROP FUNCTION IF EXISTS get_wage_rate_at;
+
+-- Drop enums
+DROP TYPE IF EXISTS audit_action_staff;
+DROP TYPE IF EXISTS attendance_status;
+DROP TYPE IF EXISTS shift_status;
+
+-- Extensions (keep if used by other tables)
+-- DROP EXTENSION IF EXISTS btree_gist;
+-- DROP EXTENSION IF EXISTS uuid-ossp;
+```
 
 ---
 
