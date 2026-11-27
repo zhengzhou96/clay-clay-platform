@@ -1,10 +1,10 @@
 -- ============================================================================
 -- Clay Clay Pottery Studio - Staff Scheduling MVP
--- Migration 002: Staff Scheduling Schema (SECURITY REVIEWED v2)
+-- Migration 002: Staff Scheduling Schema (SECURITY REVIEWED v3)
 -- Supabase project: ispoxdaiahtwzblzawef (Clay Clay Collection Logger)
 -- 
--- SECURITY REVIEW: 2026-11-27
--- Addresses all 11 issues from user security audit
+-- SECURITY REVIEW: 2026-11-27 v3
+-- Addresses all 12 issues from final security audit
 -- ============================================================================
 
 -- ============================================================================
@@ -12,7 +12,7 @@
 -- ============================================================================
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "btree_gist";  -- Required for exclusion constraints on UUID
+CREATE EXTENSION IF NOT EXISTS "btree_gist";  -- Required for exclusion constraints
 
 -- ============================================================================
 -- ENUMS (idempotent)
@@ -40,61 +40,87 @@ EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
 -- ============================================================================
--- HELPER FUNCTIONS (SECURITY DEFINER for admin checks)
+-- HELPER FUNCTIONS (SECURITY DEFINER with hardened search_path)
+-- ISSUE #9: All SECURITY DEFINER functions use SET search_path = pg_catalog, public
+-- ISSUE #5: Secure identity mapping via auth.uid() only, not email matching
 -- ============================================================================
 
 -- Function to check if current user is admin/manager
--- SECURITY DEFINER so it can read employees table regardless of RLS
 CREATE OR REPLACE FUNCTION is_current_user_admin()
 RETURNS BOOLEAN
 SECURITY DEFINER
 STABLE
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
     v_user_id UUID;
-    v_email TEXT;
     v_role TEXT;
 BEGIN
-    -- Get current user's ID from auth
+    -- ISSUE #5: Use auth.uid() for secure identity mapping
     v_user_id := auth.uid();
-    v_email := auth.jwt()->>'email';
     
-    IF v_user_id IS NULL AND v_email IS NULL THEN
+    IF v_user_id IS NULL THEN
         RETURN FALSE;
     END IF;
     
-    -- Look up role in employees table
+    -- Look up role by user ID (not email)
     SELECT e.role INTO v_role
     FROM employees e
-    WHERE e.id = v_user_id OR e.email = v_email;
+    WHERE e.id = v_user_id AND e.is_active = true;  -- ISSUE #5: Verify active status
     
     RETURN v_role IN ('admin', 'manager');
 END;
 $$ LANGUAGE plpgsql;
 
--- Function to get current user's employee ID
+-- Function to get current user's employee ID (secure, uid-based)
 CREATE OR REPLACE FUNCTION get_current_employee_id()
 RETURNS UUID
 SECURITY DEFINER
 STABLE
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
     v_user_id UUID;
-    v_email TEXT;
     v_employee_id UUID;
 BEGIN
+    -- ISSUE #5: Use auth.uid() for secure identity mapping
     v_user_id := auth.uid();
-    v_email := auth.jwt()->>'email';
     
-    IF v_user_id IS NOT NULL THEN
-        SELECT id INTO v_employee_id FROM employees WHERE id = v_user_id;
+    IF v_user_id IS NULL THEN
+        RETURN NULL;
     END IF;
     
-    IF v_employee_id IS NULL AND v_email IS NOT NULL THEN
-        SELECT id INTO v_employee_id FROM employees WHERE email = v_email;
-    END IF;
+    -- Look up by ID only (not email)
+    SELECT id INTO v_employee_id 
+    FROM employees 
+    WHERE id = v_user_id AND is_active = true;  -- ISSUE #5: Verify active
     
     RETURN v_employee_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function to check if current user is active staff
+CREATE OR REPLACE FUNCTION is_current_user_active_staff()
+RETURNS BOOLEAN
+SECURITY DEFINER
+STABLE
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+    v_user_id UUID;
+    v_is_active BOOLEAN;
+BEGIN
+    v_user_id := auth.uid();
+    
+    IF v_user_id IS NULL THEN
+        RETURN FALSE;
+    END IF;
+    
+    SELECT is_active INTO v_is_active
+    FROM employees
+    WHERE id = v_user_id;
+    
+    RETURN COALESCE(v_is_active, false);
 END;
 $$ LANGUAGE plpgsql;
 
@@ -119,10 +145,10 @@ CREATE TABLE IF NOT EXISTS employees (
 );
 
 -- Employee wage rates: Effective-dated hourly rates
--- ISSUE #8: Overlap prevention via exclusion constraint
+-- ISSUE #1: Use EXCLUDE constraint instead of unique index with GiST
 CREATE TABLE IF NOT EXISTS employee_wage_rates (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE RESTRICT,  -- Don't cascade delete wages
+    employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE RESTRICT,  -- ISSUE #6: Don't cascade delete wages
     hourly_rate_cents INTEGER NOT NULL,
     currency TEXT NOT NULL DEFAULT 'SGD',
     effective_from DATE NOT NULL,
@@ -133,19 +159,16 @@ CREATE TABLE IF NOT EXISTS employee_wage_rates (
     CONSTRAINT employee_wage_rates_currency_format CHECK (currency ~* '^[A-Z]{3}$'),
     CONSTRAINT employee_wage_rates_dates_valid CHECK (
         effective_to IS NULL OR effective_to >= effective_from
-    )
+    ),
+    -- ISSUE #1: EXCLUDE constraint prevents overlapping wage periods
+    CONSTRAINT employee_wage_rates_no_overlap 
+        EXCLUDE USING GIST (
+            employee_id WITH =,
+            daterange(effective_from, COALESCE(effective_to, 'infinity'::DATE), '[]') WITH &&
+        ) WHERE (effective_to IS NULL OR effective_to >= effective_from)
 );
 
--- Exclusion constraint: No overlapping wage rate periods for same employee
--- Uses btree_gist extension for UUID equality in GiST index
-CREATE UNIQUE INDEX IF NOT EXISTS idx_employee_wage_rates_no_overlap
-    ON employee_wage_rates USING GIST (
-        employee_id,
-        daterange(effective_from, COALESCE(effective_to, 'infinity'::DATE), '[]')
-    )
-    WHERE effective_to IS NULL OR effective_to >= effective_from;
-
--- Staff shifts: Scheduled shifts
+-- Staff shifts: Scheduled shifts (admin-managed only)
 CREATE TABLE IF NOT EXISTS staff_shifts (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
@@ -168,13 +191,13 @@ CREATE TABLE IF NOT EXISTS staff_shifts (
 );
 
 -- Attendance shifts: Actual clock in/out records
--- ISSUE #6: Constraint for one active session per employee
+-- ISSUE #4: Server-authoritative timestamps, no client-supplied values
 CREATE TABLE IF NOT EXISTS attendance_shifts (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
     shift_id UUID REFERENCES staff_shifts(id) ON DELETE SET NULL,
-    clock_in_tz TIMESTAMPTZ NOT NULL DEFAULT NOW(),  -- Server timestamp by default
-    clock_out_tz TIMESTAMPTZ,
+    clock_in_tz TIMESTAMPTZ NOT NULL DEFAULT NOW(),  -- Server timestamp (DEFAULT)
+    clock_out_tz TIMESTAMPTZ,  -- Server timestamp when set
     actual_hours NUMERIC(6,2),
     estimated_wages_cents INTEGER,
     is_unscheduled BOOLEAN NOT NULL DEFAULT FALSE,
@@ -197,20 +220,20 @@ CREATE TABLE IF NOT EXISTS attendance_shifts (
     )
 );
 
--- ISSUE #6: Partial unique index ensures only ONE active (unclocked) session per employee
+-- ISSUE #6: One active session per employee (partial unique index)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_shifts_one_active
     ON attendance_shifts(employee_id)
     WHERE clock_out_tz IS NULL AND status IN ('clocked_in', 'scheduled');
 
 -- Attendance audit logs: Immutable audit trail
--- ISSUE #9: No CASCADE delete, append-only design
+-- ISSUE #6: ON DELETE SET NULL so audit survives attendance deletion
 CREATE TABLE IF NOT EXISTS attendance_audit_logs (
     id BIGSERIAL PRIMARY KEY,
-    attendance_id UUID NOT NULL REFERENCES attendance_shifts(id) ON DELETE CASCADE,
+    attendance_id UUID,  -- No FK constraint - allows audit to survive attendance deletion
     action audit_action_staff NOT NULL,
     old_values JSONB,
     new_values JSONB,
-    changed_by UUID REFERENCES employees(id) ON DELETE SET NULL,  -- SET NULL, not CASCADE
+    changed_by UUID REFERENCES employees(id) ON DELETE SET NULL,
     change_reason TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -263,9 +286,9 @@ CREATE INDEX IF NOT EXISTS idx_attendance_audit_logs_created_at
 
 -- ============================================================================
 -- TRIGGER FUNCTIONS (self-contained, don't depend on Collection Logger)
+-- ISSUE #10: Define our own functions, don't rely on existing Collection Logger
 -- ============================================================================
 
--- ISSUE #10: Define our own update_updated_at_column
 CREATE OR REPLACE FUNCTION update_updated_at_column_fn()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -274,7 +297,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- ISSUE #4: Wage calculation uses NEW row values
+-- ISSUE #7: Fail safely when no wage rate exists
 CREATE OR REPLACE FUNCTION calculate_attendance_pay_fn(p_employee_id UUID, p_clock_in TIMESTAMPTZ, p_clock_out TIMESTAMPTZ)
 RETURNS TABLE (
     actual_hours NUMERIC(6,2),
@@ -288,16 +311,23 @@ BEGIN
         RETURN;
     END IF;
 
-    -- Get wage rate at clock-in date (Asia/Singapore date)
+    -- ISSUE #7: Get wage rate - will return NULL if none exists
     SELECT * INTO v_rate FROM get_wage_rate_at(p_employee_id, p_clock_in);
+    
+    -- ISSUE #7: Fail if no wage rate found
+    IF v_rate.hourly_rate_cents IS NULL THEN
+        RAISE EXCEPTION 'No wage rate found for employee % at time %', p_employee_id, p_clock_in
+            USING ERRCODE = '55000',
+                  DETAIL = 'Cannot calculate wages without an active wage rate';
+    END IF;
 
     RETURN QUERY SELECT
         ROUND(EXTRACT(EPOCH FROM (p_clock_out - p_clock_in)) / 3600.0, 2) AS actual_hours,
-        ROUND(EXTRACT(EPOCH FROM (p_clock_out - p_clock_in)) / 3600.0 * COALESCE(v_rate.hourly_rate_cents, 0))::INTEGER AS estimated_wages_cents;
+        ROUND(EXTRACT(EPOCH FROM (p_clock_out - p_clock_in)) / 3600.0 * v_rate.hourly_rate_cents)::INTEGER AS estimated_wages_cents;
 END;
 $$ LANGUAGE plpgsql STABLE;
 
--- Get applicable wage rate (ISSUE #7: Asia/Singapore timezone for date calculation)
+-- Get applicable wage rate (ISSUE #8: Asia/Singapore timezone, STABLE not IMMUTABLE)
 CREATE OR REPLACE FUNCTION get_wage_rate_at(
     p_employee_id UUID,
     p_at_time TIMESTAMPTZ DEFAULT NOW()
@@ -311,13 +341,13 @@ BEGIN
     SELECT ewr.hourly_rate_cents, ewr.currency
     FROM employee_wage_rates ewr
     WHERE ewr.employee_id = p_employee_id
-      -- ISSUE #7: Convert to Asia/Singapore for date comparison
+      -- ISSUE #8: Use AT TIME ZONE for Singapore date comparison (STABLE, not IMMUTABLE)
       AND ewr.effective_from <= (p_at_time AT TIME ZONE 'Asia/Singapore')::DATE
       AND (ewr.effective_to IS NULL OR ewr.effective_to >= (p_at_time AT TIME ZONE 'Asia/Singapore')::DATE)
     ORDER BY ewr.effective_from DESC
     LIMIT 1;
 END;
-$$ LANGUAGE plpgsql STABLE;
+$$ LANGUAGE plpgsql STABLE;  -- ISSUE #8: STABLE, not IMMUTABLE (timezone conversion)
 
 -- ISSUE #4: BEFORE UPDATE trigger for attendance calculation
 CREATE OR REPLACE FUNCTION update_attendance_calculations_fn()
@@ -377,7 +407,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- ISSUE #3, #5: Secure correction function with admin check
+-- ISSUE #3, #5, #9: Secure correction function with hardened SECURITY DEFINER
 CREATE OR REPLACE FUNCTION correct_attendance(
     p_attendance_id UUID,
     p_change_reason TEXT,  -- Required first
@@ -392,11 +422,19 @@ DECLARE
     v_new_values JSONB;
     v_calc RECORD;
     v_admin_check BOOLEAN;
+    v_my_id UUID;
 BEGIN
-    -- ISSUE #5: Verify admin/manager role
+    -- ISSUE #9: Hardened SECURITY DEFINER with explicit search_path (set in function declaration)
+    -- ISSUE #5: Verify admin/manager role via secure uid-based check
     v_admin_check := is_current_user_admin();
+    v_my_id := get_current_employee_id();
+    
     IF NOT v_admin_check THEN
         RAISE EXCEPTION 'Only admins/managers can correct attendance' USING ERRCODE = '42501';
+    END IF;
+    
+    IF v_my_id IS NULL THEN
+        RAISE EXCEPTION 'Authenticated employee record not found' USING ERRCODE = '55000';
     END IF;
 
     -- Get current values
@@ -412,7 +450,7 @@ BEGIN
         'clock_in_tz', COALESCE(p_new_clock_in, v_old.clock_in_tz),
         'clock_out_tz', COALESCE(p_new_clock_out, v_old.clock_out_tz),
         'notes', COALESCE(p_notes, v_old.notes),
-        'corrected_by', get_current_employee_id(),
+        'corrected_by', v_my_id,
         'corrected_at', NOW(),
         'updated_at', NOW()
     );
@@ -443,7 +481,7 @@ BEGIN
         clock_out_tz = COALESCE(p_new_clock_out, clock_out_tz),
         status = CASE WHEN p_new_clock_out IS NOT NULL THEN 'completed'::attendance_status ELSE status END,
         notes = COALESCE(p_notes, notes),
-        corrected_by = get_current_employee_id(),
+        corrected_by = v_my_id,
         corrected_at = NOW(),
         updated_at = NOW(),
         actual_hours = COALESCE((v_new_values->>'actual_hours')::NUMERIC, actual_hours),
@@ -452,14 +490,15 @@ BEGIN
 
     -- Log the correction
     PERFORM log_attendance_change_fn(
-        p_attendance_id, 'CORRECTION', v_old_values, v_new_values, get_current_employee_id(), p_change_reason
+        p_attendance_id, 'CORRECTION', v_old_values, v_new_values, v_my_id, p_change_reason
     );
 
     RETURN TRUE;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;  -- SECURITY DEFINER to bypass RLS for admin check
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;  -- ISSUE #9: Hardened search_path
 
--- ISSUE #5: Secure payroll summary function
+-- ISSUE #3, #5, #9: Secure payroll summary with enforced scoping
 CREATE OR REPLACE FUNCTION get_payroll_summary(
     p_start_date DATE,
     p_end_date DATE,
@@ -476,21 +515,29 @@ RETURNS TABLE (
 DECLARE
     v_admin_check BOOLEAN;
     v_my_id UUID;
+    v_my_role TEXT;
 BEGIN
-    -- ISSUE #5: Only admins can view payroll summaries
-    v_admin_check := is_current_user_admin();
-    IF NOT v_admin_check THEN
-        -- Allow staff to view their own summary
-        v_my_id := get_current_employee_id();
-        IF v_my_id IS NOT NULL AND (p_employee_id IS NULL OR p_employee_id = v_my_id) THEN
-            -- OK: viewing own summary
-            NULL;
-        ELSE
-            RAISE EXCEPTION 'Only admins/managers can view payroll summaries' USING ERRCODE = '42501';
-        END IF;
+    -- ISSUE #9: Hardened SECURITY DEFINER with explicit search_path
+    -- ISSUE #5: Get secure identity via auth.uid()
+    v_my_id := get_current_employee_id();
+    
+    IF v_my_id IS NULL THEN
+        RAISE EXCEPTION 'Authentication required' USING ERRCODE = '42501';
     END IF;
+    
+    -- Get role for authorization check
+    SELECT role INTO v_my_role FROM employees WHERE id = v_my_id;
+    
+    v_admin_check := v_my_role IN ('admin', 'manager');
+    
+    -- ISSUE #3: Enforce scoping INSIDE the function (SECURITY DEFINER context)
+    IF NOT v_admin_check THEN
+        -- Non-admin: can ONLY view their own summary, regardless of p_employee_id parameter
+        p_employee_id := v_my_id;  -- Force scoping to current user
+    END IF;
+    -- Admins can view all (p_employee_id respected if provided, or NULL for all)
 
-    -- ISSUE #7: Date filtering uses Asia/Singapore timezone
+    -- ISSUE #8: Asia/Singapore timezone for date filtering
     RETURN QUERY
     SELECT
         a.employee_id,
@@ -501,32 +548,32 @@ BEGIN
         COUNT(*) FILTER (WHERE a.is_unscheduled)::BIGINT AS unscheduled_count
     FROM attendance_shifts a
     JOIN employees e ON e.id = a.employee_id
-    -- ISSUE #7: Asia/Singapore date filtering
+    -- ISSUE #8: Asia/Singapore date filtering
     WHERE (a.clock_in_tz AT TIME ZONE 'Asia/Singapore')::DATE >= p_start_date
       AND (a.clock_in_tz AT TIME ZONE 'Asia/Singapore')::DATE <= p_end_date
       AND a.status IN ('completed', 'corrected')
       AND a.actual_hours IS NOT NULL
-      AND (p_employee_id IS NULL OR a.employee_id = p_employee_id)
+      AND a.employee_id = COALESCE(p_employee_id, a.employee_id)  -- Enforced scoping
     GROUP BY a.employee_id, e.name
     ORDER BY e.name;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public;  -- ISSUE #9: Hardened search_path
 
--- Singapore timezone helpers (ISSUE #7)
+-- ISSUE #8: Singapore timezone helpers (STABLE, not IMMUTABLE)
 CREATE OR REPLACE FUNCTION to_sgt(p_utc TIMESTAMPTZ)
 RETURNS TIMESTAMPTZ AS $$
 BEGIN
     RETURN p_utc AT TIME ZONE 'Asia/Singapore';
 END;
-$$ LANGUAGE sql IMMUTABLE;
+$$ LANGUAGE plpgsql STABLE;  -- ISSUE #8: STABLE, not IMMUTABLE
 
 CREATE OR REPLACE FUNCTION from_sgt(p_sgt TEXT)
 RETURNS TIMESTAMPTZ AS $$
 BEGIN
-    -- Accepts Singapore time as text, returns UTC TIMESTAMPTZ
     RETURN p_sgt::TIMESTAMP AT TIME ZONE 'Asia/Singapore';
 END;
-$$ LANGUAGE sql IMMUTABLE;
+$$ LANGUAGE plpgsql STABLE;  -- ISSUE #8: STABLE, not IMMUTABLE
 
 -- Staff schedule function
 CREATE OR REPLACE FUNCTION get_staff_schedule(
@@ -546,7 +593,18 @@ RETURNS TABLE (
     status shift_status,
     notes TEXT
 ) AS $$
+DECLARE
+    v_my_id UUID;
+    v_is_admin BOOLEAN;
 BEGIN
+    v_my_id := get_current_employee_id();
+    v_is_admin := is_current_user_admin();
+    
+    -- Authorization check
+    IF v_my_id IS NULL THEN
+        RAISE EXCEPTION 'Authentication required' USING ERRCODE = '42501';
+    END IF;
+    
     RETURN QUERY
     SELECT
         ss.id, ss.employee_id, e.name, e.role,
@@ -556,18 +614,20 @@ BEGIN
     WHERE ss.start_time_tz::DATE <= p_end_date
       AND ss.end_time_tz::DATE >= p_start_date
       AND ss.status != 'cancelled'
-      AND (p_employee_id IS NULL OR ss.employee_id = p_employee_id)
-      AND (p_location IS NULL OR ss.location = p_location)
       AND e.is_active = true
+      -- Authorization: admin sees all, staff sees only own
+      AND (v_is_admin OR ss.employee_id = v_my_id)
+      AND (p_employee_id IS NULL OR p_employee_id = ss.employee_id)
+      AND (p_location IS NULL OR ss.location = p_location)
     ORDER BY ss.start_time_tz, e.name;
 END;
-$$ LANGUAGE plpgsql STABLE;
+$$ LANGUAGE plpgsql STABLE
+SET search_path = pg_catalog, public;
 
 -- ============================================================================
 -- TRIGGERS
 -- ============================================================================
 
--- Updated_at triggers (using our own function)
 DROP TRIGGER IF EXISTS update_employees_updated_at ON employees;
 CREATE TRIGGER update_employees_updated_at
     BEFORE UPDATE ON employees
@@ -589,6 +649,12 @@ CREATE TRIGGER attendance_calculate_pay
     BEFORE UPDATE ON attendance_shifts
     FOR EACH ROW EXECUTE FUNCTION update_attendance_calculations_fn();
 
+-- ISSUE #3: Prevent staff from changing privileged fields
+DROP TRIGGER IF EXISTS employees_prevent_privilege_change ON employees;
+CREATE TRIGGER employees_prevent_privilege_change
+    BEFORE UPDATE ON employees
+    FOR EACH ROW EXECUTE FUNCTION employees_prevent_self_privilege_change_fn();
+
 -- ============================================================================
 -- ROW LEVEL SECURITY
 -- ============================================================================
@@ -601,16 +667,16 @@ ALTER TABLE attendance_audit_logs ENABLE ROW LEVEL SECURITY;
 
 -- ----------------------------------------------------------------------------
 -- RLS: Employees
--- ISSUE #1: No OLD/NEW in policies
--- ISSUE #2: No recursive RLS - uses SECURITY DEFINER functions
--- ISSUE #3: Staff cannot modify role/privileged fields
+-- ISSUE #2: No OLD/NEW in policies, no recursive RLS
+-- ISSUE #3: Staff cannot modify privileged fields (enforced by trigger)
+-- ISSUE #5: Secure identity via auth.uid(), not email
 -- ----------------------------------------------------------------------------
 
 -- Staff can view their own profile only
 CREATE POLICY employees_select_own ON employees
     FOR SELECT USING (
         auth.uid() IS NOT NULL AND
-        (id = get_current_employee_id())
+        id = get_current_employee_id()
     );
 
 -- Admins can view all employees
@@ -619,8 +685,7 @@ CREATE POLICY employees_select_admin ON employees
         is_current_user_admin()
     );
 
--- ISSUE #3: Staff can update ONLY phone (not role, email, name, is_active)
--- Enforced via trigger, not policy (policy can't do field-level)
+-- ISSUE #3: Staff can update own profile (trigger blocks privileged fields)
 CREATE POLICY employees_update_own ON employees
     FOR UPDATE USING (
         auth.uid() IS NOT NULL AND
@@ -633,7 +698,7 @@ CREATE POLICY employees_admin_all ON employees
         is_current_user_admin()
     );
 
--- ISSUE #3: Trigger to prevent staff from changing privileged fields
+-- ISSUE #3: Trigger function to prevent staff from changing privileged fields
 CREATE OR REPLACE FUNCTION employees_prevent_self_privilege_change_fn()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -663,14 +728,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS employees_prevent_privilege_change ON employees;
-CREATE TRIGGER employees_prevent_privilege_change
-    BEFORE UPDATE ON employees
-    FOR EACH ROW EXECUTE FUNCTION employees_prevent_self_privilege_change_fn();
-
 -- ----------------------------------------------------------------------------
 -- RLS: Employee Wage Rates
--- ISSUE #3: Staff cannot modify wages (admin only)
+-- ISSUE #3: Staff can view own wages only, admin manages all
 -- ----------------------------------------------------------------------------
 
 -- Staff can view ONLY their own wage rates
@@ -694,14 +754,15 @@ CREATE POLICY employee_wage_rates_admin_all ON employee_wage_rates
 
 -- ----------------------------------------------------------------------------
 -- RLS: Staff Shifts
--- ISSUE #3: Staff cannot create/modify their own shifts
+-- ISSUE #2: Remove staff self-update policy
+-- ISSUE #3: Only admins can create/manage shifts
 -- ----------------------------------------------------------------------------
 
 -- Staff can view their own shifts
 CREATE POLICY staff_shifts_select_own ON staff_shifts
     FOR SELECT USING (
         auth.uid() IS NOT NULL AND
-        (employee_id = get_current_employee_id() OR created_by = get_current_employee_id())
+        employee_id = get_current_employee_id()
     );
 
 -- Admins can view all shifts
@@ -710,18 +771,9 @@ CREATE POLICY staff_shifts_select_admin ON staff_shifts
         is_current_user_admin()
     );
 
--- ISSUE #3: Staff CANNOT INSERT shifts (no policy = no access)
--- ISSUE #3: Staff can update own DRAFT shifts but cannot publish
-CREATE POLICY staff_shifts_update_own_draft ON staff_shifts
-    FOR UPDATE USING (
-        auth.uid() IS NOT NULL AND
-        employee_id = get_current_employee_id() AND
-        status = 'draft'
-    )
-    WITH CHECK (
-        status = 'draft' AND  -- Cannot publish
-        employee_id = OLD.employee_id  -- Cannot reassign
-    );
+-- ISSUE #2, #3: NO INSERT policy for staff - only admins can create shifts
+-- ISSUE #2, #3: NO UPDATE policy for staff - only admins can manage schedules
+-- ISSUE #4: Staff cannot supply arbitrary times/statuses
 
 -- Admins can manage all shifts
 CREATE POLICY staff_shifts_admin_all ON staff_shifts
@@ -731,7 +783,7 @@ CREATE POLICY staff_shifts_admin_all ON staff_shifts
 
 -- ----------------------------------------------------------------------------
 -- RLS: Attendance Shifts
--- ISSUE #3: Staff can only clock in/out of their own attendance
+-- ISSUE #4: Server-authoritative clock in/out only
 -- ISSUE #6: One active session constraint (enforced by unique index)
 -- ----------------------------------------------------------------------------
 
@@ -748,16 +800,19 @@ CREATE POLICY attendance_shifts_select_admin ON attendance_shifts
         is_current_user_admin()
     );
 
--- ISSUE #3: Staff can clock in (with server timestamp)
+-- ISSUE #4: Staff can clock in ONLY with server timestamp (no client values)
 CREATE POLICY attendance_shifts_clock_in ON attendance_shifts
     FOR INSERT WITH CHECK (
         auth.uid() IS NOT NULL AND
         employee_id = get_current_employee_id() AND
         clock_out_tz IS NULL AND
-        status IN ('scheduled', 'clocked_in')
+        status IN ('scheduled', 'clocked_in') AND
+        -- ISSUE #4: Ensure server default is used (client can't override)
+        clock_in_tz = NOW() AND
+        is_unscheduled = FALSE
     );
 
--- ISSUE #3: Staff can clock out (server validates)
+-- ISSUE #4: Staff can clock out ONLY (server validates timestamps/wages)
 CREATE POLICY attendance_shifts_clock_out ON attendance_shifts
     FOR UPDATE USING (
         auth.uid() IS NOT NULL AND
@@ -767,7 +822,11 @@ CREATE POLICY attendance_shifts_clock_out ON attendance_shifts
     )
     WITH CHECK (
         clock_out_tz IS NOT NULL AND
-        status IN ('clocked_out', 'completed')
+        clock_out_tz = NOW() AND  -- ISSUE #4: Server timestamp
+        status IN ('clocked_out', 'completed') AND
+        -- ISSUE #4: Staff cannot modify wages/hours directly
+        actual_hours IS NULL AND
+        estimated_wages_cents IS NULL
     );
 
 -- Admins can manage all attendance
@@ -778,7 +837,7 @@ CREATE POLICY attendance_shifts_admin_all ON attendance_shifts
 
 -- ----------------------------------------------------------------------------
 -- RLS: Attendance Audit Logs
--- ISSUE #9: Append-only design
+-- ISSUE #6: Append-only, survives attendance deletion
 -- ----------------------------------------------------------------------------
 
 -- Staff can view audit logs for their own attendance
@@ -797,14 +856,14 @@ CREATE POLICY attendance_audit_logs_select_admin ON attendance_audit_logs
         is_current_user_admin()
     );
 
--- ISSUE #9: Only admins/service role can insert audit logs
+-- ISSUE #6: Only admins/service role can insert audit logs
 CREATE POLICY attendance_audit_logs_insert ON attendance_audit_logs
     FOR INSERT WITH CHECK (
         is_current_user_admin() OR
         auth.jwt()->>'role' = 'service_role'
     );
 
--- ISSUE #9: NO UPDATE or DELETE policies = append-only
+-- ISSUE #6: NO UPDATE or DELETE policies = append-only
 
 -- ============================================================================
 -- COMMENTS
@@ -814,7 +873,7 @@ COMMENT ON TABLE employees IS 'Staff members (instructors, assistants, managers)
 COMMENT ON TABLE employee_wage_rates IS 'Effective-dated hourly wage rates (SENSITIVE - admin only)';
 COMMENT ON TABLE staff_shifts IS 'Scheduled shifts (admin-created, supports overnight)';
 COMMENT ON TABLE attendance_shifts IS 'Actual clock in/out records with calculated pay';
-COMMENT ON TABLE attendance_audit_logs IS 'Immutable audit trail for attendance corrections (append-only)';
+COMMENT ON TABLE attendance_audit_logs IS 'Immutable audit trail for attendance corrections (append-only, survives attendance deletion)';
 
 COMMENT ON COLUMN employees.role IS 'Role: admin, manager, instructor, assistant, staff';
 COMMENT ON COLUMN employee_wage_rates.effective_to IS 'NULL = currently active rate';
@@ -825,15 +884,19 @@ COMMENT ON COLUMN attendance_shifts.is_unscheduled IS 'TRUE when clocked in with
 COMMENT ON COLUMN attendance_shifts.actual_hours IS 'Calculated: (clock_out - clock_in) in hours, 2dp';
 COMMENT ON COLUMN attendance_shifts.estimated_wages_cents IS 'Calculated at clock_out using wage rate at clock_in date (Asia/Singapore)';
 COMMENT ON COLUMN attendance_audit_logs.change_reason IS 'Required for CORRECTION actions';
+COMMENT ON COLUMN attendance_audit_logs.attendance_id IS 'References attendance_shifts but no FK - audit survives deletion';
 
 -- ============================================================================
--- GRANTS (ISSUE #5: Function security)
+-- GRANTS (ISSUE #5, #9: Function security)
 -- ============================================================================
 
 -- Revoke public execution on sensitive functions
 REVOKE ALL ON FUNCTION correct_attendance(UUID, TEXT, TIMESTAMPTZ, TIMESTAMPTZ, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION get_payroll_summary(DATE, DATE, UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION get_wage_rate_at(UUID, TIMESTAMPTZ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION is_current_user_admin() FROM PUBLIC;
+REVOKE ALL ON FUNCTION get_current_employee_id() FROM PUBLIC;
+REVOKE ALL ON FUNCTION is_current_user_active_staff() FROM PUBLIC;
 
 -- Grant execution to authenticated users (function internals do role checks)
 GRANT EXECUTE ON FUNCTION correct_attendance(UUID, TEXT, TIMESTAMPTZ, TIMESTAMPTZ, TEXT) TO authenticated;
@@ -841,17 +904,27 @@ GRANT EXECUTE ON FUNCTION get_payroll_summary(DATE, DATE, UUID) TO authenticated
 GRANT EXECUTE ON FUNCTION get_wage_rate_at(UUID, TIMESTAMPTZ) TO authenticated;
 GRANT EXECUTE ON FUNCTION is_current_user_admin() TO authenticated;
 GRANT EXECUTE ON FUNCTION get_current_employee_id() TO authenticated;
+GRANT EXECUTE ON FUNCTION is_current_user_active_staff() TO authenticated;
 
 -- ============================================================================
--- IDEMPOTENCY GUARD (ISSUE #11)
+-- IDEMPOTENCY GUARD (ISSUE #10, #11)
 -- ============================================================================
+
+-- Drop obsolete/overloaded functions from previous migrations
+-- ISSUE #10: Clean up any insecure function versions
+DROP FUNCTION IF EXISTS is_current_user_admin_old();
+DROP FUNCTION IF EXISTS get_current_employee_id_old();
 
 -- Mark migration as applied
 CREATE TABLE IF NOT EXISTS _migration_002_applied (
     applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    version TEXT NOT NULL DEFAULT 'security-reviewed-v2'
+    version TEXT NOT NULL DEFAULT 'security-reviewed-v3'
 );
 
 INSERT INTO _migration_002_applied (version) 
-SELECT 'security-reviewed-v2' 
+SELECT 'security-reviewed-v3' 
 WHERE NOT EXISTS (SELECT 1 FROM _migration_002_applied);
+
+-- ============================================================================
+-- MIGRATION COMPLETE
+-- ============================================================================
