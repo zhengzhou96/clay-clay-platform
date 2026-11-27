@@ -58,9 +58,11 @@ The Supabase credentials are configured, but the database migration (`002_staff_
 
 ### How to Apply Migration
 
+**Important:** Use the updated migration file (commit `a8a939aa` or later) which includes the `btree_gist` extension required for UUID exclusion constraints.
+
 **Option 1: Supabase Dashboard (Recommended - 2 minutes)**
 1. Go to: https://supabase.com/dashboard/project/ispoxdaiahtwzblzawef/sql/new
-2. Copy contents of `db/migrations/002_staff_scheduling.sql` (11,490 chars)
+2. Copy contents of `db/migrations/002_staff_scheduling.sql` from the latest commit
 3. Paste into SQL Editor
 4. Click "Run"
 5. Verify tables created: `employees`, `employee_wage_rates`, `staff_shifts`, `attendance_shifts`, `attendance_audit_logs`
